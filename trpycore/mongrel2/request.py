@@ -3,7 +3,7 @@ try:
 except:
     import simplejson as json
 
-from mongrel2 import tnetstrings
+from trpycore.mongrel2 import tnetstrings
 
 
 class Request(object):
