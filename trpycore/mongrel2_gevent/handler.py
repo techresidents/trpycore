@@ -1,5 +1,5 @@
 from gevent_zeromq import zmq
-from trpycore.mongrel2_gevent.request import Request
+from trpycore.mongrel2_common.request import Request
 try:
     import json
 except:

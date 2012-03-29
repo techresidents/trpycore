@@ -1,6 +1,6 @@
 import zmq
 import time
-from trpycore.mongrel2.request import Request
+from trpycore.mongrel2_common.request import Request
 try:
     import json
 except:
