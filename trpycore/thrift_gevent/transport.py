@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import gevent.socket
 
 #Patch TSocket.socket with gevent.socket

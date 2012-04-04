@@ -1,5 +1,3 @@
-#/usr/bin/env python
-
 import Queue
 import threading
 
@@ -138,8 +136,9 @@ class ZookeeperClient(threading.Thread):
         return exception_class(message)
 
     def start(self):
-        self.running = True
-        super(ZookeeperClient, self).start()
+        if not self.running:
+            self.running = True
+            super(ZookeeperClient, self).start()
 
     def run(self):
         def session_watcher(handle, type, state, path):
@@ -180,8 +179,9 @@ class ZookeeperClient(threading.Thread):
            Callers wishing to wait for the client to disconnect
            and stop should call join().
         """
-        self.running = False
-        self._queue.put(self._STOP_EVENT)
+        if self.running:
+            self.running = False
+            self._queue.put(self._STOP_EVENT)
 
     def state(self):
         return zookeeper.state(self.handle)
@@ -289,6 +289,8 @@ class ZookeeperClient(threading.Thread):
             def async_callback(handle, return_code, stat):
                 if return_code == zookeeper.OK:
                     async_result.set(stat)
+                elif return_code == zookeeper.NONODE:
+                    return None
                 else:
                     async_result.set_exception(self.error_to_exception(return_code))
 

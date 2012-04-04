@@ -1,5 +1,3 @@
-#/usr/bin/env python
-
 import fcntl
 import os
 import Queue
@@ -252,8 +250,9 @@ class ZookeeperClient(object):
 
     def start(self):
         """Start main ZookeeperClient greenlet"""
-        self.running = True
-        self.greenlet = gevent.spawn(self.run)
+        if not self.running:
+            self.running = True
+            self.greenlet = gevent.spawn(self.run)
 
     def run(self):
         def session_watcher(handle, type, state, path):
@@ -284,7 +283,10 @@ class ZookeeperClient(object):
                     self.connected = False
 
                 for observer in self.session_observers:
-                    observer(event)
+                    try:
+                        observer(event)
+                    except Exception as error:
+                        print str(error)
 
             except Exception as error:
                 print str(error)
@@ -292,15 +294,17 @@ class ZookeeperClient(object):
         self.close()
     
     def join(self):
-        self.greenlet.join()
+        if self.greenlet:
+            self.greenlet.join()
 
 
     def stop(self):
         """Stop the ZookeeperClient by putting the STOP_EVENT in queue.
            To wait for the client to stop, you should call join().
         """
-        self.running = False
-        self._queue.put(self._STOP_EVENT)
+        if self.running:
+            self.running = False
+            self._queue.put(self._STOP_EVENT)
 
     def state(self):
         return zookeeper.state(self.handle)
@@ -328,6 +332,9 @@ class ZookeeperClient(object):
         return self.async_create(path, data, acl, sequence, ephemeral).get()
 
     def create_path(self, path, acl=None, sequence=False, ephemeral=False):
+        if self.exists(path):
+            return
+
         data = None
         
         current_path = ['']
@@ -377,6 +384,8 @@ class ZookeeperClient(object):
         def callback(handle, return_code, stat):
             if return_code == zookeeper.OK:
                 async_result.set(stat)
+            elif return_code == zookeeper.NONODE:
+                return None
             else:
                 async_result.set_exception(self.error_to_exception(return_code))
 

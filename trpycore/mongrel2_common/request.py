@@ -1,6 +1,8 @@
 import cgi
 import urlparse
 
+from Cookie import Cookie
+
 try:
     import json
 except:
@@ -54,7 +56,8 @@ class SafeRequest(object):
         self.req = req
         self.url_params = None
         self.post_params = None
-        
+        self.cookies = Cookie(str(self.header("cookie")))
+
         if self.header("QUERY"):
             self.url_params = urlparse.parse_qs(self.header("QUERY"))
 
@@ -64,6 +67,12 @@ class SafeRequest(object):
     def header(self, name):
         if name in self.req.headers:
             return self.req.headers[name]
+        else:
+            return None
+    
+    def cookie(self, name):
+        if name in self.cookies:
+            return self.cookies[name].value
         else:
             return None
     

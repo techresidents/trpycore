@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import errno
 import os
 from contextlib import contextmanager

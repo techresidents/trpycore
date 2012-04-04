@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import grp
 import os
 import pwd
