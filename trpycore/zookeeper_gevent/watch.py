@@ -8,7 +8,7 @@ import gevent.event
 import gevent.queue
 import zookeeper
 
-class DataWatch(object):
+class GDataWatch(object):
     """DataWatch provides a convenient wrapper for monitoring the value of a Zookeeper node.
 
        watch_observer method, if provided, will be invoked in the context of the 
@@ -88,7 +88,7 @@ class DataWatch(object):
         return self._stat
 
 
-class ChildrenWatch(object):
+class GChildrenWatch(object):
     """ChildrenWatch provides a convenient wrapper for monitoring the existence
        of a zookeeper node's children and their INITIAL data.
 
@@ -170,22 +170,22 @@ class ChildrenWatch(object):
     def get_children(self):
         return self._children
 
-class HashRingWatch(object):
+class GHashringWatch(object):
     """HashRingWatch provides a convenient wrapper for using a zookeeper
        node to represent a consistent hash ring.
 
-       The zookeeper node's children will represent tokens on a consistent
+       The zookeeper node's children will represent positions on a consistent
        hash ring. The data associated with each node will be application
        specific, but should contain the necessary data to identify the
        selected (service, machine, url) associated with the hash ring
-       token. 
+       position. 
        
        The associated data MUST be static, since the children data will
        not be monitored for updates.
 
        watch_observer method, if provided, will be invoked in the context of the 
        the HashRingWatch greenlet (with this object as the sole parameter)
-       when tokens are added or removed from the hash ring.
+       when positions are added or removed from the hash ring.
 
        session_observer method, if provied, will be invoked in the context of the
        ZookeeperClient greenlet (with Zookeeper.Event as the sole parameter)
@@ -194,24 +194,23 @@ class HashRingWatch(object):
 
     _STOP_EVENT = None
 
-    def __init__(self, client, path, positions=0, position_data=None, watch_observer=None, session_observer=None, hash_function=None):
+    def __init__(self, client, path, num_positions=0, position_data=None,
+            watch_observer=None, session_observer=None, hash_function=None):
+
         self._client = client
         self._path = path
         self._watch_observer = watch_observer
         self._session_observer = session_observer
         self._hash_function = hash_function or hashlib.md5
         self._queue = gevent.queue.Queue()
-        self._positions = []
+        self._num_positions = num_positions
         self._position_data = position_data
         self._watching = False
         self._running = False
-
+        
+        self._positions = []
         self._hashring = []
         self._children = {}
-
-        for position in range(positions):
-            token = self._hash_function(uuid.uuid4().hex).hexdigest()
-            self._positions.append(token)
 
         def session_observer(event):
             #Restart the watcher upon reconnection if we're watching and not running
@@ -226,22 +225,32 @@ class HashRingWatch(object):
     def start(self):
         self._watching = True
         gevent.spawn(self._run)
-    
+
     def _add_hashring_positions(self):
-        for position in self._positions:
-            self._client.create_path(self._path)
-            try:
-                data = self._position_data or position
-                self._client.create(os.path.join(self._path, position), data, ephemeral=True)
-            except zookeeper.NodeExistsException:
-                pass
+        #If positions have already been added return
+        if self._positions:
+            return
+        
+        #Add our postions to the hashring
+        for i in range(0, self._num_positions):
+            while True:
+                try:
+                    position = self._hash_function(uuid.uuid4().hex).hexdigest()
+                    self._client.create_path(self._path)
+                    data = self._position_data or position
+                    self._client.create(os.path.join(self._path, position), data, ephemeral=True)
+                    self._positions.append(position)
+                    break
+                except zookeeper.NodeExistsException:
+                    #Position collision, keep trying.
+                    pass
     
     def _run(self):
         if not self._client.connected:
             return
         
         self._running = True
-
+        
         self._add_hashring_positions()
 
         def watcher(event):
@@ -282,11 +291,11 @@ class HashRingWatch(object):
         self._queue.put(self._STOP_EVENT)
     
 
-    def get_hashring(self):
-        return self._hashring
-
     def get_children(self):
         return self._children
+
+    def get_hashring(self):
+        return self._hashring
     
     def get_hashchild(self, data):
         """Return the selected zookeeper node's data.
@@ -303,5 +312,5 @@ class HashRingWatch(object):
         if index == len(self._hashring):
             index = 0
 
-        token = self._hashring[index]
-        return self._children[token]
+        position = self._hashring[index]
+        return self._children[position]

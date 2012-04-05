@@ -19,7 +19,7 @@ def http_response(body, code, status, headers):
     return HTTP_FORMAT % payload
 
 
-class Connection(object):
+class GConnection(object):
     """
     A Connection object manages the connection between your handler
     and a Mongrel2 server (or servers).  It can receive raw requests

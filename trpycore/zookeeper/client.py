@@ -290,7 +290,7 @@ class ZookeeperClient(threading.Thread):
                 if return_code == zookeeper.OK:
                     async_result.set(stat)
                 elif return_code == zookeeper.NONODE:
-                    return None
+                    async_result.set(None)
                 else:
                     async_result.set_exception(self.error_to_exception(return_code))
 

@@ -49,19 +49,19 @@ ERROR_CODE_EXCEPTION_MAP = {
 }
 
 
-class ZookeeperClient(object):
+class GZookeeperClient(object):
     """Gevent Compatible Client for Apache Zookeeper
        
-       ZookeeperClient will run in it's own greenlet once started.
+       GZookeeperClient will run in it's own greenlet once started.
        
        Session observer callbacks will be dispatched in the context 
-       of the ZookeeperClient greenlet.
+       of the GZookeeperClient greenlet.
 
        All other callbacks (watcher, async callbacks), will be dispatched in
        the context of newly spawned greenlets.
     """
     
-    #STOP_EVENT, when pushed onto event queue, will cause the ZookeeperClient to stop.
+    #STOP_EVENT, when pushed onto event queue, will cause the GZookeeperClient to stop.
     _STOP_EVENT = None
 
     class Event(object):
@@ -93,14 +93,14 @@ class ZookeeperClient(object):
         """
         def __init__(self, pipe):
             self._pipe = pipe
-            super(ZookeeperClient.AsyncResult, self).__init__()
+            super(GZookeeperClient.AsyncResult, self).__init__()
         
         def set(self, value=None):
-            super(ZookeeperClient.AsyncResult, self).set(value)
+            super(GZookeeperClient.AsyncResult, self).set(value)
             os.write(self._pipe[1], '\0')
     
         def set_exception(self, exception):
-            super(ZookeeperClient.AsyncResult, self).set_exception(exception)
+            super(GZookeeperClient.AsyncResult, self).set_exception(exception)
             os.write(self._pipe[1], '\0')
 
 
@@ -108,7 +108,7 @@ class ZookeeperClient(object):
         """AsyncQueue is a threadsafe queue with cross-thread signaling support"""
 
         def __init__(self, *args, **kwargs):
-            super(ZookeeperClient.AsyncQueue, self).__init__(*args, **kwargs)
+            super(GZookeeperClient.AsyncQueue, self).__init__(*args, **kwargs)
             
             #event to signal between the readpipe_callback greenlet
             #and the get() invoking greenlet
@@ -142,14 +142,14 @@ class ZookeeperClient(object):
         
         def put(self, item, block=False, timeout=None):
             """Put item on queue and signal cross-thread event"""
-            super(ZookeeperClient.AsyncQueue, self).put(item, block, timeout)
+            super(GZookeeperClient.AsyncQueue, self).put(item, block, timeout)
             os.write(self._pipe[1], '\0')
         
         def get(self, block=True, timeout=None):
             """Get item off the queue and clear _event"""
             self._event.wait()
             self._event.clear()
-            return super(ZookeeperClient.AsyncQueue, self).get(block=False)
+            return super(GZookeeperClient.AsyncQueue, self).get(block=False)
        
 
     def __init__(self, servers):
@@ -249,7 +249,7 @@ class ZookeeperClient(object):
         return exception_class(message)
 
     def start(self):
-        """Start main ZookeeperClient greenlet"""
+        """Start main GZookeeperClient greenlet"""
         if not self.running:
             self.running = True
             self.greenlet = gevent.spawn(self.run)
@@ -259,7 +259,7 @@ class ZookeeperClient(object):
             """sesession_watcher callback will be invoked by the underlying zookeeper
                API (in zookeeper API thread) when session events occur.
 
-               Events will be passed to the ZookeeperClient greenlet through
+               Events will be passed to the GZookeeperClient greenlet through
                the gevent queue. 
 
                The gevent queue was not thread safe. There is a potential race
@@ -299,7 +299,7 @@ class ZookeeperClient(object):
 
 
     def stop(self):
-        """Stop the ZookeeperClient by putting the STOP_EVENT in queue.
+        """Stop the GZookeeperClient by putting the STOP_EVENT in queue.
            To wait for the client to stop, you should call join().
         """
         if self.running:
@@ -385,7 +385,7 @@ class ZookeeperClient(object):
             if return_code == zookeeper.OK:
                 async_result.set(stat)
             elif return_code == zookeeper.NONODE:
-                return None
+                async_result.set(None)
             else:
                 async_result.set_exception(self.error_to_exception(return_code))
 
