@@ -7,18 +7,26 @@ from trpycore.os.privs import drop_privs
 def exec_daemon(path, args, umask=None, working_directory=None, username=None, groupname=None):
     """Exec a daemon process and return its pid.
        
-       The path and args parameters are identical to os.execv().
+    This method will fork twice:
+     1) First fork will create a short-lived parent process whose
+        sole purpose is to exit (to create daemon process) and return
+        the daemon process's pid.
+     
+     2) Second fork is the process which will be replaced with the
+        daemon process via the execv call.
+    
+    Args:
+        path: path of executable   - identical to os.execv()
+        args: executable arguments - identical to os.execv()
+        umask: optional umask for the daemon process
+        working_directory: optional working directory for daemon process
+        username: optional username to drop privieleges to for deamon process
+            (groupname also required)
+        groupname: optional groupname to drop privieleges to for daemon process
+            (usernam also required)
 
-       If username and groupname are provided and we're currently root,
-       privileges will be dropped accordingly.
-       
-       This method will fork twice:
-        1) First fork will create a short-lived parent process whose
-           sole purpose is to exit (to create daemon process) and return
-           the daemon process's pid.
-        
-        2) Second fork is the process which will be replaced with the
-           daemon process via the execv call.
+    Returns:
+        pid of the daemon process.
     """
     #Create a pipe so that we can return the pid of the daemon process to the caller
     #The daemon process will write its pid back to the parent through this pipe.
@@ -54,19 +62,27 @@ def exec_daemon(path, args, umask=None, working_directory=None, username=None, g
 
 def execv_daemon(path, args, umask=None, working_directory=None, username=None, groupname=None):
     """Fork and execv a process that will become a daemon as soon as the parent process terminates.
-       
-       The pid of the newly created process is returned.  This is useful if you're preparing a daemon
-       process in a short-lived process that needs the pid of the soon-to-be daemon process.
 
-       If username and groupname are provided and we're currently root,
-       privileges will be dropped accordingly.
-       
-       Forks a child process and replaces it with a process prepared to become a daemon.
-       1) New session is created to be come leader of the session and process group
-       2) Controlling terminal is removed
-       3) stdin, stdout, and stderr redirected to /dev/null
-       4) umask is set per parameter
-       5) working directory is set per paramter
+    Forks a child process and replaces it with a process prepared to become a daemon.
+    1) New session is created to be come leader of the session and process group
+    2) Controlling terminal is removed
+    3) stdin, stdout, and stderr redirected to /dev/null
+    4) umask is set per parameter
+    5) working directory is set per paramter
+
+    Args:
+        path: path of executable   - identical to os.execv()
+        args: executable arguments - identical to os.execv()
+        umask: optional umask for the daemon process
+        working_directory: optional working directory for daemon process
+        username: optional username to drop privieleges to for deamon process
+            (groupname also required)
+        groupname: optional groupname to drop privieleges to for daemon process
+            (usernam also required)
+
+    Returns:
+        The pid of the newly created process is returned.  This is useful if you're preparing a daemon
+        process in a short-lived process that needs the pid of the soon-to-be daemon process.
     """
 
     pid = os.fork()

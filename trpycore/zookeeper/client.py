@@ -1,8 +1,10 @@
+import logging
 import Queue
 import threading
 
 import zookeeper
 
+#Map zookeeper event types to names
 TYPE_NAME_MAP = {
     zookeeper.CHANGED_EVENT: "CHANGED_EVENT",
     zookeeper.CHILD_EVENT: "CHILD_EVENT",
@@ -12,6 +14,7 @@ TYPE_NAME_MAP = {
     zookeeper.SESSION_EVENT: "SESSION_EVENT",
 }
 
+#Map zookeeper states to names
 STATE_NAME_MAP = {
     zookeeper.ASSOCIATING_STATE: "ASSOCIATING_STATE",
     zookeeper.AUTH_FAILED_STATE: "AUTH_FAILED_STATE",
@@ -20,6 +23,7 @@ STATE_NAME_MAP = {
     zookeeper.EXPIRED_SESSION_STATE: "EXPIRED_SESSION_STATE",
 }
 
+#Map zookeeper error codes to exceptions
 ERROR_CODE_EXCEPTION_MAP = {
     zookeeper.APIERROR: zookeeper.ApiErrorException,
     zookeeper.AUTHFAILED: zookeeper.AuthFailedException,
@@ -46,24 +50,30 @@ ERROR_CODE_EXCEPTION_MAP = {
 class ZookeeperClient(threading.Thread):
     """Client for Apache Zookeeper
        
-       ZookeeperClient will run in it's own thread once started.
-       
-       Session observer callbacks will also be dispatched in the context 
-       of the ZookeeperClient thread.
+    ZookeeperClient will run in it's own thread once started.
+    
+    Session observer callbacks will also be dispatched in the context 
+    of the ZookeeperClient thread.
 
-       All other callbacks, (watcher, async callbacks), will be dispatched in the
-       context of the underlying zookeeper API threads. Care should be taken
-       not to do too much processing in the contexts of these threads.
+    All other callbacks, (watcher, async callbacks), will be dispatched in the
+    context of the underlying zookeeper API threads. Care should be taken
+    not to do too much processing in the contexts of these threads.
     """
     
     #Adding _STOP_EVENT to the event queue will cause the Zookeeper client
     #thread to exit.
-    _STOP_EVENT = None
+    _STOP_EVENT = object()
 
     class Event(object):
         """Represent zookeeper events"""
 
         def __init__(self, type, state, path):
+            """Event constructor.
+            Args:
+                type: zookeeper api event type
+                state: zookeeper api state
+                path: zookeeper node path
+            """
             self.type = type
             self.state = state
             self.path = path
@@ -108,18 +118,47 @@ class ZookeeperClient(threading.Thread):
             self.event.set()
 
     def __init__(self, servers):
+        """Zookeeper constructor.
+        
+        Args:
+            servers: list of zookeeper servers, i.e., ["localhost:2181", localdev:2181"]
+        """
         super(ZookeeperClient, self).__init__()
 
         self.servers = servers
         self.acl = [{"perms": 0x1f, "scheme": "world", "id": "anyone"}]
         self.handle = None
         self.session_observers = []
+        self.session_timeout_ms = 10000
         self.connected = False
         self.running = False
         self._queue = Queue.Queue()
+        self.log = logging.getLogger(__name__)
+
+
+    def _watcher_proxy(self, watcher):
+        """Proxy to invoke user passed watcher callback.
+        
+        Proxy wraps type, state, path in ZookeeperClient.Event
+        and invokes the user's watcher callback.
+        """
+        if watcher is None:
+            return None
+
+        def watcher_proxy_callback(handle, type, state, path):
+            watcher(self.Event(type, state, path))
+        return watcher_proxy_callback
 
     def error_to_exception(self, return_code, message=None):
-        """Convert zookeeper error code to the appropriate exception"""
+        """Convert zookeeper error code to the appropriate exception.
+
+        Args:
+            return_code: zookeeper return code.
+            message: exception message.
+        
+        Returns:
+            zookeeper exception object which should be raised.
+        """
 
         try:
             error_message = zookeeper.zerror(return_code)
@@ -136,27 +175,40 @@ class ZookeeperClient(threading.Thread):
         return exception_class(message)
 
     def start(self):
+        """Starts ZookeeperClient thread if not arleady running."""
         if not self.running:
+            self.log.info("Starting ZookeeperClient ...")
             self.running = True
             super(ZookeeperClient, self).start()
 
     def run(self):
+        """ZookeeperClient thread run method."""
+
         def session_watcher(handle, type, state, path):
-            """session_watcher callback will put the event in the queue_
-               where it will be consumed in the ZookeeperClient thread.
-               In this thread the event will be processed and passed
-               on to session observers.
+            """zookeeper session  callback method.
+            
+            This method will put the session  event in the queue_
+            where it will be consumed in the ZookeeperClient thread.
+            In this thread the event will be processed and passed
+            on to session observers.
+
+            Args:
+                handle: zookeeper api handle
+                type: zookeeper api event type
+                state: zookeeper api state
+                path: zookeeper api node path
             """
             self._queue.put(self.Event(type, state, path))
         
+        self.log.info("ZookeeperClient started.")
         #start up underlying zookeeper client
-        self.handle = zookeeper.init(",".join(self.servers), session_watcher, 10000)
+        self.handle = zookeeper.init(",".join(self.servers), session_watcher, self.session_timeout_ms)
 
         while(self.running):
             try:
                 event = self._queue.get()
 
-                if event == self._STOP_EVENT:
+                if event is self._STOP_EVENT:
                     break
 
                 if event.state == zookeeper.CONNECTED_STATE:
@@ -165,45 +217,78 @@ class ZookeeperClient(threading.Thread):
                     self.connected = False
 
                 for observer in self.session_observers:
-                    observer(event)
+                    try:
+                        observer(event)
+                    except Exception as error:
+                        self.log.error("Session observer exception from %s:" % observer)
+                        self.log.exception(error)
 
             except Exception as error:
-                print str(error)
+                self.log.error("Unhandled ZookeeperClient exception:")
+                self.log.exception(error)
         
         #ZookeeperClient has been stopped, so close underlying zookeeper connections.
         self.close()
 
+        self.log.info("ZookeeperClient stopped.")
+
 
     def stop(self):
         """Stop Zookeeper Client by putting STOP_EVENT in queue.
-           Callers wishing to wait for the client to disconnect
-           and stop should call join().
+
+        Callers wishing to wait for the client to disconnect
+        and stop should call join().
         """
         if self.running:
+            self.log.info("Stopping ZookeeperClient ...")
             self.running = False
             self._queue.put(self._STOP_EVENT)
 
     def state(self):
+        """Returns zookeeper api state."""
         return zookeeper.state(self.handle)
 
     def session(self):
-        """Returns (session, session_password) tuple"""
+        """Returns zookeeper api (session, session_password) tuple."""
         return zookeeper.client_id(self.handle)
 
     def session_timeout(self):
+        """Returns zookeepe session timeout."""
         return zookeeper.recv_timeout(self.handle)
 
     def close(self):
-        """Close underlying zookeeper connections"""
+        """Close underlying zookeeper connections."""
         zookeeper.close(self.handle)
         self.handle = None
         self.connected = False
 
     def add_session_observer(self, observer):
+        """Add zookeeper session observer method.
+            
+        Observer method will be invoked whenever a zookeeper session event occurs.
+        The method will be invoked in the context of the ZookeeperClient thread
+        with the ZookeeperClient.Event as its sole argument.
+        """
         self.session_observers.append(observer)
     
     def create(self, path, data=None, acl=None, sequence=False, ephemeral=False):
-        """Blocking call to create Zookeeper nodes"""
+        """Blocking call to create Zookeeper node.
+
+        Args:
+            path: zookeeper node path, i.e. /my/zookeeper/node/path
+            data: optional zookeeper node data (string)
+            acl: optional zookeeper access control list (default is insecure)
+            sequence: if True node will be created by adding a unique number
+                the supplied path.
+            ephemeral: if True, node will automatically be deleted when client exists.
+        
+        Returns:
+            path of created node
+    
+        Raises:
+            zookeeper.NodeExistsException if node already exists. 
+            zookeeper.*Exception for other failure scenarios.
+        """
 
         data = data or ""
         acl = acl or self.acl
@@ -212,7 +297,19 @@ class ZookeeperClient(threading.Thread):
         return zookeeper.create(self.handle, path, data, acl, flags)
 
     def create_path(self, path, acl=None, sequence=False, ephemeral=False):
-        """Blocking call to create Zookeeper node (including any subnodes that do not exist)"""
+        """Blocking call to create Zookeeper node (including any subnodes that do not exist).
+            
+        Args:
+            path: zookeeper node path, i.e. /my/zookeeper/node/path
+            acl: optional zookeeper access control list (default is insecure)
+            sequence: if True node will be created by adding a unique number
+                the supplied path.
+            ephemeral: if True, node will automatically be deleted when client exists.
+
+        Raises:
+            zookeeper.*Exception for other failure scenarios.
+        """
+
         data = None
         
         current_path = ['']
@@ -224,34 +321,113 @@ class ZookeeperClient(threading.Thread):
                 pass
 
     def exists(self, path, watcher=None):
-        """Blocking call to exists"""
-        return zookeeper.exists(self.handle, path, watcher)
+        """Blocking call to check if zookeeper node  exists.
+        
+        Args:
+            watcher: watcher method to be invoked upon node creation
+                or removal with Zookeeper.Event as its sole argument.
+                watcher will be invoked in the context of the underlying
+                zookeeper API threads.
+
+        Returns:
+            zookeeper state dict if node exists, otherwise None.
+            i.e.
+            {'pzxid': 4522L, 'ctime': 1333654407863L, 'aversion': 0, 'mzxid': 4522L,
+            'numChildren': 0, 'ephemeralOwner': 0L, 'version': 0, 'dataLength': 0,
+            'mtime': 1333654407863L, 'cversion': 0, 'czxid': 4522L}
+
+        Raises:
+            zookeeper.*Exception for other failure scenarios.
+        """
+        return zookeeper.exists(self.handle, path, self._watcher_proxy(watcher))
 
     def get_children(self, path, watcher=None):
-        """Blocking call to get_children"""
-        return zookeeper.get_children(self.handle, path, watcher)
+        """Blocking call to retreive a  zookeeper node's children.
+
+        Args:
+            path: zookeeper node path
+            watcher: callback method to be invoked upon addition or removal
+                of node's children with ZookeeperClient.Event as its sole
+                argument.  watcher will be invoked in the context of the underlying
+                zookeeper API threads.
+        
+        Returns:
+            list of zookeeper node paths
+
+        Raises:
+            zookeeper.NoNodeException if node already exists. 
+            zookeeper.*Exception for other failure scenarios.
+        """
+        return zookeeper.get_children(self.handle, path, self._watcher_proxy(watcher))
 
     def get_data(self, path, watcher=None):
-        """Blocking call to get data"""
-        return zookeeper.get(self.handle, path, watcher)
+        """Blocking call to get zookeeper node's data.
+
+        Args:
+            path: zookeeper node path
+            watcher: callback method to be invoked upon data change.
+                watcher will be invoked in the context of the underlying
+                zookeeper API threads.
+        
+        Returns:
+            (data, stat) tuple upon success.
+
+        Raises:
+            zookeeper.NoNodeException if node already exists. 
+            zookeeper.*Exception for other failure scenarios.
+        """
+        return zookeeper.get(self.handle, path, self._watcher_proxy(watcher))
 
     def set_data(self, path, data, return_data=False):
-        """Blocking call to set data"""
+        """Blocking call to set zookeeper node's data.
+
+        Args:
+            path: zookeeper node path
+            data: zookeeper node data (string)
+            return_data: if True return data
+
+        Raises:
+            zookeeper.NoNodeException if node already exists. 
+            zookeeper.*Exception for other failure scenarios.
+        """
         if return_data:
             return zookeeper.set2(self.handle, path, data)
         else:
             return zookeeper.set(self.handle, path, data)
 
     def delete(self, path, version=None):
-        """Blocking call to delete data"""
+        """Blocking call to delete zookeeper node.
+
+        Args:
+            path: zookeeper node path
+            version: expected node version (optional)
+
+        Raises:
+            zookeeper.NoNodeException if node already exists. 
+            zookeeper.NotEmptyException if node has children. 
+            zookeeper.BadVersionException if version does not match node's version.
+            zookeeper.*Exception for other failure scenarios.
+        """
         version = version if version is not None else -1
         return zookeeper.delete(self.handle, path, version)
 
     def async_create(self, path, data=None, acl=None, sequence=False, ephemeral=False, callback=None):
         """Async call to create Zookeeper node.
-           If callback is None, an AsyncResult object will be returned.
-           Otherwise, callback will be invoked in the context of the
-           underlying zookeeper API thread.
+
+        Args:
+            path: zookeeper node path, i.e. /my/zookeeper/node/path
+            data: optional zookeeper node data (string)
+            acl: optional zookeeper access control list (default is insecure)
+            sequence: if True node will be created by adding a unique number
+                the supplied path.
+            ephemeral: if True, node will automatically be deleted when client exists.
+            callback: callback method to be invoked upon operation completion with
+                zookeeper api handle, return_code, and path arguments. callback
+                will be invoked in the context of the underlying zookeeper API
+                thread.
+        
+        Returns:
+            Zookeeper.AsyncResult if callback is None, otherwise None.
         """
 
         data = data or ""
@@ -276,10 +452,21 @@ class ZookeeperClient(threading.Thread):
         return async_result
 
     def async_exists(self, path, watcher=None, callback=None):
-        """Async call to exists.
-           If callback is None, an AsyncResult object will be returned.
-           Otherwise, callback will be invoked in the context of the
-           underlying zookeeper API thread.
+        """Async call to check if zookeeper node  exists.
+        
+        Args:
+            path: zookeeper node path
+            watcher: watcher method to be invoked upon node creation
+                or removal with Zookeeper.Event as its sole argument.
+                watcher will be invoked in the context of the underlying
+                zookeeper API threads.
+            callback: callback method to be invoked upon operation completion with
+                zookeeper api handle, return_code, and stat arguments. callback
+                will be invoked in the context of the underlying zookeeper API
+                thread.
+
+        Returns:
+            Zookeeper.AsyncResult if callback is None, otherwise None.
         """
         async_result = None
 
@@ -301,10 +488,21 @@ class ZookeeperClient(threading.Thread):
         return async_result
 
     def async_get_children(self, path, watcher=None, callback=None):
-        """Async call to get_children.
-           If callback is None, an AsyncResult object will be returned.
-           Otherwise, callback will be invoked in the context of the
-           underlying zookeeper API thread.
+        """Async call to get zookeeper node's children.
+        
+        Args:
+            path: zookeeper node path
+            watcher: watcher method to be invoked upon node creation
+                or removal with Zookeeper.Event as its sole argument.
+                watcher will be invoked in the context of the underlying
+                zookeeper API threads.
+            callback: callback method to be invoked upon operation completion with
+                zookeeper api handle, return_code, and list of children nodes.
+                callback will be invoked in the context of the underlying
+                zookeeper API thread.
+
+        Returns:
+            Zookeeper.AsyncResult if callback is None, otherwise None.
         """
         async_result = None
 
@@ -324,10 +522,21 @@ class ZookeeperClient(threading.Thread):
         return async_result
 
     def async_get_data(self, path, watcher=None, callback=None):
-        """Async call to get_data.
-           If callback is None, an AsyncResult object will be returned.
-           Otherwise, callback will be invoked in the context of the
-           underlying zookeeper API thread.
+        """Async call to get zookeeper node's data.
+
+        Args:
+            path: zookeeper node path
+            watcher: watcher method to be invoked upon node creation
+                or removal with Zookeeper.Event as its sole argument.
+                watcher will be invoked in the context of the underlying
+                zookeeper API threads.
+            callback: callback method to be invoked upon operation completion with
+                zookeeper api handle, return_code, data, and stat.
+                callback will be invoked in the context of the underlying
+                zookeeper API thread.
+
+        Returns:
+            Zookeeper.AsyncResult if callback is None, otherwise None.
         """
         async_result = None
 
@@ -347,10 +556,18 @@ class ZookeeperClient(threading.Thread):
         return async_result
 
     def async_set_data(self, path, data, callback=None):
-        """Async call to set_data.
-           If callback is None, an AsyncResult object will be returned.
-           Otherwise, callback will be invoked in the context of the
-           underlying zookeeper API thread.
+        """Async call to set zookeeper node's data.
+
+        Args:
+            path: zookeeper node path
+            data: zookeeper node data (string)
+            callback: callback method to be invoked upon operation completion with
+                zookeeper api handle, return_code, data, and stat.
+                callback will be invoked in the context of the underlying
+                zookeeper API thread.
+
+        Returns:
+            Zookeeper.AsyncResult if callback is None, otherwise None.
         """
         async_result = None
 
@@ -370,10 +587,18 @@ class ZookeeperClient(threading.Thread):
         return async_result
 
     def async_delete(self, path, version=None, callback=None):
-        """Async call to delete.
-           If callback is None, an AsyncResult object will be returned.
-           Otherwise, callback will be invoked in the context of the
-           underlying zookeeper API thread.
+        """Async call to delete zookeeper node's data.
+
+        Args:
+            path: zookeeper node path
+            version: expected node version
+            callback: callback method to be invoked upon operation completion with
+                zookeeper api handle, return_code.
+                callback will be invoked in the context of the underlying
+                zookeeper API thread.
+
+        Returns:
+            Zookeeper.AsyncResult if callback is None, otherwise None.
         """
         version = version if version is not None else -1
         async_result = None
@@ -392,5 +617,3 @@ class ZookeeperClient(threading.Thread):
         zookeeper.adelete(self.handle, path, version, callback)
 
         return async_result
-
-

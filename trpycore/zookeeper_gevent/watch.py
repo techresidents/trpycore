@@ -1,5 +1,6 @@
 import bisect
 import hashlib
+import logging
 import os
 import uuid
 
@@ -9,21 +10,34 @@ import gevent.queue
 import zookeeper
 
 class GDataWatch(object):
-    """DataWatch provides a convenient wrapper for monitoring the value of a Zookeeper node.
+    """GDataWatch provides a convenient wrapper for monitoring the value of a Zookeeper node.
 
-       watch_observer method, if provided, will be invoked in the context of the 
-       the DataWatch greenlet (with this object as the sole parameter)
-       when the node's data is modified.
+    watch_observer method, if provided, will be invoked in the context of the 
+    the DataWatch greenlet (with this object as the sole parameter)
+    when the node's data is modified.
 
-       session_observer method, if provied, will be invoked in the context of the
-       ZookeeperClient greenlet (with Zookeeper.Event as the sole parameter)
-       when session events occur.
+    session_observer method, if provied, will be invoked in the context of the
+    GZookeeperClient greenlet (with Zookeeper.Event as the sole parameter)
+    when session events occur.
    """
     
     #Event to stop the watcher
-    _STOP_EVENT = None
+    _STOP_EVENT = object()
 
     def __init__(self, client, path, watch_observer=None, session_observer=None):
+        """DataWatch constructor.
+
+        Args:
+            client: GZooKeeperClient instance
+            path: zookeeper node path to watch
+            watch_observer: optional method to be invoked upon data change
+                with this object as the sole parameter. Method will be invoked
+                in the context of GDataWatch's greenlet.
+            session_observer: optional method to be invoked upon zookeeper
+                session event with Zookeeper.Event as the sole argument.
+                Method will be invoked in the context of the 
+                GZookeeperClient greenlet.
+        """
         self._client = client
         self._path = path
         self._watch_observer = watch_observer
@@ -31,11 +45,13 @@ class GDataWatch(object):
         self._queue = gevent.queue.Queue()
         self._watching = False
         self._running = False
+        self._log = logging.getLogger("%s.%s" % (__name__, self.__class__.__name__))
 
         self._data = None
         self._stat = None
 
         def session_observer(event):
+            """Internal session observer to handle disconnections."""
             #Restart the watcher upon reconnection if we're watching and not running
             if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
                 self.start()
@@ -47,10 +63,13 @@ class GDataWatch(object):
         self._client.add_session_observer(session_observer)
     
     def start(self):
-        self._watching = True
-        gevent.spawn(self._run)
+        """Start watching node."""
+        if not self._running:
+            self._watching = True
+            gevent.spawn(self._run)
     
     def _run(self):
+        """Method will run in GDataWatch greenlet."""
         if not self._client.connected:
             return
         
@@ -68,42 +87,73 @@ class GDataWatch(object):
                 if self._watch_observer:
                     self._watch_observer(self)
 
-                self._queue.get()
+                event = self._queue.get()
+                if event is self._STOP_EVENT:
+                    break
 
             except zookeeper.ConnectionLossException:
                 break
             except Exception as error:
-                break
+                self._log.exception(error)
         
         self._running = False
     
     def stop(self):
-        self._watching = False
-        self._queue.put(self._STOP_EVENT)
+        """Stop watching node."""
+        if self._running:
+            self._watching = False
+            self._queue.put(self._STOP_EVENT)
     
     def get_data(self):
+        """Get zookeeper node data.
+
+        Returns:
+            zookeeper node data (string)
+        """
         return self._data
 
     def get_stat(self):
+        """Return zookeeper node stat data.
+        
+        Returns:
+            zookeeper node stat data.
+            i.e.
+            {'pzxid': 4522L, 'ctime': 1333654407863L, 'aversion': 0, 'mzxid': 4522L,
+            'numChildren': 0, 'ephemeralOwner': 0L, 'version': 0, 'dataLength': 0,
+            'mtime': 1333654407863L, 'cversion': 0, 'czxid': 4522L}
+        """
         return self._stat
 
 
 class GChildrenWatch(object):
-    """ChildrenWatch provides a convenient wrapper for monitoring the existence
+    """GChildrenWatch provides a convenient wrapper for monitoring the existence
        of a zookeeper node's children and their INITIAL data.
 
-       watch_observer method, if provided, will be invoked in the context of the 
-       the ChildrenWatch greenlet (with this object as the sole parameter)
-       when the node's data is modified.
+    watch_observer method, if provided, will be invoked in the context of the 
+    the GChildrenWatch greenlet (with this object as the sole parameter)
+    when the node's data is modified.
 
-       session_observer method, if provied, will be invoked in the context of the
-       ZookeeperClient greenlet (with Zookeeper.Event as the sole parameter)
-       when session events occur.
+    session_observer method, if provied, will be invoked in the context of the
+    GZookeeperClient greenlet (with Zookeeper.Event as the sole parameter)
+    when session events occur.
    """
 
-    _STOP_EVENT = None
+    _STOP_EVENT = object()
 
     def __init__(self, client, path, watch_observer=None, session_observer=None):
+        """GChildrenWatch constructor.
+
+        Args:
+            client: GZookeeperClient instance
+            path: zookeeper node path to watch
+            watch_observer: optional method to be invoked upon child change
+                with this object as the sole parameter. Method will be invoked
+                in the context of the GChildrenWatch greenlet.
+            session_observer: optional method to be invoked upon zookeeper
+                session event with Zookeeper.Event as the sole argument.
+                Method will be invoked in the context of the GZookeeperClient
+                greenlet.
+        """
         self._client = client
         self._path = path
         self._watch_observer = watch_observer
@@ -111,10 +161,12 @@ class GChildrenWatch(object):
         self._queue = gevent.queue.Queue()
         self._watching = False
         self._running = False
+        self._log = logging.getLogger("%s.%s" % (__name__, self.__class__.__name__))
 
         self._children = {}
 
         def session_observer(event):
+            """Internal zookeeper session observer to handle disconnections."""
             #Restart the watcher upon reconnection if we're watching and not running
             if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
                 self.start()
@@ -125,16 +177,26 @@ class GChildrenWatch(object):
         self._client.add_session_observer(session_observer)
     
     def start(self):
-        self._watching = True
-        gevent.spawn(self._run)
+        """Start watching node's children."""
+        if not self._running:
+            self._watching = True
+            gevent.spawn(self._run)
     
     def _run(self):
+        """Method to be run in GChildrenWatch greenlet."""
         if not self._client.connected:
             return
 
         self._running = True
 
         def watcher(event):
+            """Internal node watcher method.
+
+            watcher will be invoked in the context of GZookeeperClient
+            greenlet. It will put the event on the _queue so that it
+            can be handle in _run method and update the children
+            accordingly.
+            """
             self._queue.put(event)
 
         while self._watching:
@@ -155,47 +217,72 @@ class GChildrenWatch(object):
                     self._watch_observer(self)
                 
                 event = self._queue.get()
+                if event is self._STOP_EVENT:
+                    break
 
             except zookeeper.ConnectionLossException:
                 break
             except Exception as error:
-                break
+                self._log.exception(error)
 
         self._running = False
 
     def stop(self):
-        self._watching = False
-        self._queue.put(self._STOP_EVENT)
+        """Stop watching children."""
+        if self._running:
+            self._watching = False
+            self._queue.put(self._STOP_EVENT)
     
     def get_children(self):
+        """Return a node's children.
+        
+        Returns:
+            dict with the node name as the key and its data as its value.
+        """
         return self._children
 
 class GHashringWatch(object):
-    """HashRingWatch provides a convenient wrapper for using a zookeeper
+    """GHashringWatch provides a convenient wrapper for using a zookeeper
        node to represent a consistent hash ring.
 
-       The zookeeper node's children will represent positions on a consistent
-       hash ring. The data associated with each node will be application
-       specific, but should contain the necessary data to identify the
-       selected (service, machine, url) associated with the hash ring
-       position. 
-       
-       The associated data MUST be static, since the children data will
-       not be monitored for updates.
+    The zookeeper node's children will represent positions on a consistent
+    hash ring. The data associated with each node will be application
+    specific, but should contain the necessary data to identify the
+    selected (service, machine, url) associated with the hash ring
+    position. 
+    
+    The associated data MUST be static, since the children data will
+    not be monitored for updates.
 
-       watch_observer method, if provided, will be invoked in the context of the 
-       the HashRingWatch greenlet (with this object as the sole parameter)
-       when positions are added or removed from the hash ring.
+    watch_observer method, if provided, will be invoked in the context of the 
+    the GHashringWatch greenlet (with this object as the sole parameter)
+    when positions are added or removed from the hash ring.
 
-       session_observer method, if provied, will be invoked in the context of the
-       ZookeeperClient greenlet (with Zookeeper.Event as the sole parameter)
-       when session events occur.
-   """
+    session_observer method, if provied, will be invoked in the context of the
+    GZookeeperClient greenlet (with Zookeeper.Event as the sole parameter)
+    when session events occur.
+    """
 
-    _STOP_EVENT = None
+    _STOP_EVENT = object()
 
     def __init__(self, client, path, num_positions=0, position_data=None,
             watch_observer=None, session_observer=None, hash_function=None):
+        """GHashringWatch constructor.
+
+        Args:
+            client: GZookeeperClient instance
+            path: zookeeper node path to watch
+            num_positions: optional number of positions to occupy on
+                the hashring (nodes to create).
+            position_data: data to associate with the occupied positions (nodes)
+            watch_observer: optional method to be invoked upon hashring change
+                with this object as the sole parameter. Method will be invoked
+                in the context of the GHashringWatch greenlet.
+            session_observer: optional method to be invoked upon zookeeper
+                session event with Zookeeper.Event as the sole argument.
+                Method will be invoked in the context of the GZookeeperClient
+                greenlet.
+        """
 
         self._client = client
         self._path = path
@@ -207,12 +294,14 @@ class GHashringWatch(object):
         self._position_data = position_data
         self._watching = False
         self._running = False
+        self._log = logging.getLogger("%s.%s" % (__name__, self.__class__.__name__))
         
         self._positions = []
         self._hashring = []
         self._children = {}
 
         def session_observer(event):
+            """Internal zookeeper session observer to handle disconnections."""
             #Restart the watcher upon reconnection if we're watching and not running
             if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
                 self.start()
@@ -223,10 +312,14 @@ class GHashringWatch(object):
         self._client.add_session_observer(session_observer)
     
     def start(self):
-        self._watching = True
-        gevent.spawn(self._run)
+        """Start watching hashring node."""
+        if not self._running:
+            self._watching = True
+            gevent.spawn(self._run)
 
     def _add_hashring_positions(self):
+        """Add positions to hashring (create nodes)."""
+
         #If positions have already been added return
         if self._positions:
             return
@@ -246,6 +339,7 @@ class GHashringWatch(object):
                     pass
     
     def _run(self):
+        """Method to run in GHashringWatch greenlet."""
         if not self._client.connected:
             return
         
@@ -254,6 +348,13 @@ class GHashringWatch(object):
         self._add_hashring_positions()
 
         def watcher(event):
+            """Internal watcher to be invoked when hashring changes.
+
+            Method will be invoked in the context of GZookeeperClient
+            greenlet. It will put an event on the _queue to signal
+            the _run method to awaken and update the hashring data
+            in the context of the GHashringWatch greenlet.
+            """
             self._queue.put(event)
 
         while self._running:
@@ -277,33 +378,49 @@ class GHashringWatch(object):
                 if self._watch_observer:
                     self._watch_observer(self)
 
-                self._queue.get()
+                event = self._queue.get()
+                if event is self._STOP_EVENT:
+                    break
 
             except zookeeper.ConnectionLossException:
                 break
             except Exception as error:
-                break
+                self._log.exception(error)
         
         self._running = False
     
     def stop(self):
-        self._watching = False
-        self._queue.put(self._STOP_EVENT)
+        """Stop watching the hashring."""
+        if self._running:
+            self._watching = False
+            self._queue.put(self._STOP_EVENT)
     
 
     def get_children(self):
+        """Return hashring node's children.
+        
+        The children node names represent positions on the hashring.
+
+        Returns:
+            dict with the node name as the key and its data as its value.
+        """
         return self._children
 
     def get_hashring(self):
         return self._hashring
     
     def get_hashchild(self, data):
-        """Return the selected zookeeper node's data.
+        """Return the selected hashring positions's node data.
 
-           The selected node is determined based on the hash
-           of the user passed "data". The first node to the
-           right of the data hash  on the hash ring
-           will be selected.
+        The selected node is determined based on the hash
+        of the user passed "data". The first node to the
+        right of the data hash on the hash ring
+        will be selected.
+        
+        Args:
+            data: string to hash to find appropriate hashring position.
+        Returns:
+            data (string) associated with the selected child.
         """
         data_hash = self._hash_function(data).hexdigest()
         index = bisect.bisect(self._hashring, data_hash)

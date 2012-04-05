@@ -7,14 +7,28 @@ class LockFileException(Exception):
 
 @contextmanager
 def lockfile(path, create_directory=False, directory_mode=0700, mode=0600):
-    """lockfile context manager
+    """lockfile context manager.
        
-       Creates lock file with mode if it does not already exist, otherwise,
-       LockFileException is raised. The lock file will be safely removed when
-       the context manager exits.
+    Creates lock file with mode if it does not already exist, otherwise,
+    LockFileException is raised. The lock file will be safely removed when
+    the context manager exits.
 
-       If create_directory is True, the necessary directories will be created
-       with mode directory_mode via os.makedirs()
+    If create_directory is True, the necessary directories will be created
+    with mode directory_mode via os.makedirs()
+
+    Args:
+        path: lockfile path
+        create_directory: if True lockfile directory will be created if
+            it does not already exist.
+        directory_mode: permssions with which to create directory if
+            create_directory is True.
+        mode: lock file permissions
+    
+    Yields:
+        lock file descriptor
+    
+    Raises:
+        LockfileException if lockfile exists and is locked.
     """
     try:
         fd = None
@@ -28,7 +42,7 @@ def lockfile(path, create_directory=False, directory_mode=0700, mode=0600):
         
         #If lock file exists raise exception
         if os.path.exists(path):
-            raise LockFileException("pid file exists - %s" % path)
+            raise LockFileException("lock file exists - %s" % path)
         
         
         #Create lock file
@@ -43,7 +57,7 @@ def lockfile(path, create_directory=False, directory_mode=0700, mode=0600):
             if fd:
                 os.close(fd)
                 fd = None
-            raise LockFileException("pid file exists - %s" % path)
+            raise LockFileException("lock file exists - %s" % path)
 
         yield fd
 

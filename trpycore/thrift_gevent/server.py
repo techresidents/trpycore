@@ -10,10 +10,12 @@ from thrift.transport import TTransport
 class TGeventServer(TServer.TServer):
     """Thrift server compatible with gevent.
 
-       For each request a new greenlet with be spawned to handle the request.
+    For each request a new greenlet with be spawned to handle the request.
     """
 
     def serve(self):
+        """Accept and process new server requests."""
+
         self.serverTransport.listen()
         while True:
             try:
