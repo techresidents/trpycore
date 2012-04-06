@@ -50,9 +50,14 @@ class Request(object):
             return False
 
 class SafeRequest(object):
-    """Wrapper for Request which adds escape support"""
+    """Wrapper for Mongrel2 Request which adds escape support"""
 
     def __init__(self, req):
+        """SafeRequest constructor.
+
+        Args:
+            req: Mongrel2 Request object
+        """
         self.req = req
         self.url_params = None
         self.post_params = None
@@ -64,25 +69,67 @@ class SafeRequest(object):
         if self.header("METHOD") == "POST":
             self.post_params = urlparse.parse_qs(self.req.body)
     
+    def is_disconnect(self):
+        """Returns True if Mongrel2 client disconnected."""
+        return self.req.is_disconnect()
+
+    def should_close(self):
+        """Returns True if Mongrel2 client requested connection to be closed.."""
+        return self.req.should_close()
+    
     def header(self, name):
+        """Get Http header.
+
+        Args:
+            name: Http header name to return.
+        
+        Returns:
+            Header value if present, None otherwise.
+        """
         if name in self.req.headers:
             return self.req.headers[name]
         else:
             return None
     
     def cookie(self, name):
+        """Get Http cookie.
+
+        Args:
+            name: Http cookie name to return.
+        
+        Returns:
+            Cookie value if present, None otherwise.
+        """
         if name in self.cookies:
             return self.cookies[name].value
         else:
             return None
     
     def param(self, name, escape=True):
+        """Get Http URL parameter or POST parameter.
+
+        Args:
+            name: Http URL or POST parameter name to return.
+            escape: if True parameter value will be escaped.
+        
+        Returns:
+            Paramater value if present, None otherwise.
+        """
         if self.method() == "GET":
             return self.url_param(name, escape)
         else:
             return self.post_param(name, escape)
     
     def url_param(self, name, escape=True):
+        """Get Http URL parameter.
+
+        Args:
+            name: Http URL parameter name to return.
+            escape: if True parameter value will be escaped.
+        
+        Returns:
+            Paramater value if present, None otherwise.
+        """
         value = self.url_params[name][0]
         if escape:
             return self._escape(value)
@@ -90,6 +137,15 @@ class SafeRequest(object):
             return value
 
     def post_param(self, name, escape=True):
+        """Get Http POST parameter.
+
+        Args:
+            name: Http POST parameter name to return.
+            escape: if True parameter value will be escaped.
+        
+        Returns:
+            Paramater value if present, None otherwise.
+        """
         value = self.post_params[name][0]
         if escape:
             return self._escape(value)
@@ -97,6 +153,11 @@ class SafeRequest(object):
             return value
 
     def method(self):
+        """Get Http method (GET, POST, etc...).
+
+        Returns:
+            Http method value.
+        """
         return self.header("METHOD")
 
     def _escape(self, input):
