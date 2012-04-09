@@ -54,7 +54,7 @@ ERROR_CODE_EXCEPTION_MAP = {
 
 
 class GZookeeperClient(object):
-    """Gevent Compatible Client for Apache Zookeeper.
+    """Gevent Compatible Client for Apache Zookeeper which is Greenlet safe.
        
    GZookeeperClient will run in it's own greenlet once started.
    

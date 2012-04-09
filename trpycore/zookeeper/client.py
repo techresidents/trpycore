@@ -48,7 +48,7 @@ ERROR_CODE_EXCEPTION_MAP = {
 }
 
 class ZookeeperClient(threading.Thread):
-    """Client for Apache Zookeeper
+    """Thread safe client for Apache Zookeeper
        
     ZookeeperClient will run in it's own thread once started.
     
