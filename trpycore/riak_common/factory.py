@@ -1,4 +1,3 @@
-from __future__ import absolute_import
 import riak
 
 from trpycore.factory.base import Factory
