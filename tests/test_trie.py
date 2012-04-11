@@ -9,6 +9,10 @@ class TestTrie(unittest.TestCase):
         for k in ["b", "batter", "bat", "a", "ax", "at", "attic", "ape", "aped"]:
             self.trie.insert(k, k)
     
+    def test_contains(self):
+        self.assertEquals("a" in self.trie, True)
+        self.assertEquals("alpha" in self.trie, False)
+    
     def test_clear(self):
         items = self.trie.find()
         self.assertNotEqual(len(items), 0)
