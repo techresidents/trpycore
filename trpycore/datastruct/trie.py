@@ -210,11 +210,11 @@ class Trie(object):
 
         raise StopIteration
 
-    def find(self, prefix, max_results=None, breadth_first=True):
+    def find(self, prefix=None, max_results=None, breadth_first=True):
         """Find all values starting with prefix.
 
         Args:
-            prefix: String prefix to match.
+            prefix: Optional string prefix to match.
             max_results: Optional integer controlling
                 max number of results to return.
             breadth_first: If True, results will be
