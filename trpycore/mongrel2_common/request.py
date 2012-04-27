@@ -130,6 +130,9 @@ class SafeRequest(object):
         Returns:
             Paramater value if present, None otherwise.
         """
+        if name not in self.url_params:
+            return None
+
         value = self.url_params[name][0]
         if escape:
             return self._escape(value)
@@ -146,6 +149,9 @@ class SafeRequest(object):
         Returns:
             Paramater value if present, None otherwise.
         """
+        if name not in self.post_params:
+            return None
+
         value = self.post_params[name][0]
         if escape:
             return self._escape(value)
