@@ -115,10 +115,10 @@ class SafeRequest(object):
         Returns:
             Paramater value if present, None otherwise.
         """
-        if self.method() == "GET":
-            return self.url_param(name, escape)
-        else:
+        if self.method() == 'POST':
             return self.post_param(name, escape)
+        else:
+            return self.url_param(name, escape)
     
     def url_param(self, name, escape=True):
         """Get Http URL parameter.
