@@ -14,7 +14,7 @@ def find_packages():
 
 setup(
     name='trpycore',
-    version = '0.2-SNAPSHOT',
+    version = '0.3-SNAPSHOT',
     author = '30and30',
     packages = find_packages(),
     license = 'LICENSE',
