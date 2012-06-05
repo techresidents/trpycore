@@ -62,12 +62,20 @@ class SafeRequest(object):
         self.url_params = None
         self.post_params = None
         self.cookies = Cookie(str(self.header("cookie")))
+        self._body = self.req.body
+        self._data = {}
+        self._escaped_data = {}
+        self._content_type = self.header("content-type")
 
         if self.header("QUERY"):
             self.url_params = urlparse.parse_qs(self.header("QUERY"))
 
         if self.header("METHOD") == "POST":
             self.post_params = urlparse.parse_qs(self.req.body)
+        
+        if self._body and self._content_type and self._content_type.find("application/json") != -1:
+            self._data = json.loads(self._body)
+            self._escaped_data = json.loads(self._escape(self._body))
     
     def is_disconnect(self):
         """Returns True if Mongrel2 client disconnected."""
@@ -165,6 +173,20 @@ class SafeRequest(object):
             Http method value.
         """
         return self.header("METHOD")
+    
+    def body(self, escape=True):
+        """Return http request body"""
+        if escape:
+            return self._escape(self._body)
+        else:
+            return self._body
+
+    def data(self, escape=True):
+        """Return http request body as formatted data"""
+        if escape:
+            return self._escaped_data
+        else:
+            return self._data
 
     def _escape(self, input):
         return cgi.escape(input)
