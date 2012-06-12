@@ -140,7 +140,7 @@ def basic_encode(n, base=36, alphabet=None, pad_to=32):
     Returns:
         Encoded string
     """
-    return enbase(reverse_bits(8, pad_to), base, alphabet)
+    return enbase(reverse_bits(n, pad_to), base, alphabet)
 
 def basic_decode(s, base=36, alphabet=None, pad_to=32):
     """Decode base encoded string s to integer.
