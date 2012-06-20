@@ -7,7 +7,7 @@ from thrift import Thrift
 from thrift.server import TServer
 from thrift.transport import TTransport
 
-class TGeventServer(TServer.TServer):
+class TGeventServer(TServer.TServer, object):
     """Thrift server compatible with gevent.
 
     For each request a new greenlet with be spawned to handle the request.
