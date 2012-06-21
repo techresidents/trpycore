@@ -3,6 +3,8 @@ import threading
 import time
 import Queue
 
+from trpycore.thread.util import join
+
 STOP_ITEM = object()
 
 class WorkerThread(threading.Thread):
@@ -95,15 +97,7 @@ class ThreadPool(object):
         Arguments:
             timeout: join timeout in seconds
         """
-        start = time.time()
-        for thread in self.threads:
-            if timeout:
-                max_wait = timeout - (time.time() - start)
-                if max_wait < 0:
-                    break
-            else:
-                max_wait = None
-            thread.join(max_wait)
+        join(self.threads, timeout)
    
     def is_alive(self):
         """Test if thread pool is running / alive.
