@@ -14,10 +14,10 @@ def find_packages():
 
 setup(
     name='trpycore',
-    version = '0.4-SNAPSHOT',
-    author = '30and30',
+    version = '0.4.1-SNAPSHOT',
+    author = 'Tech Residents, Inc.',
     packages = find_packages(),
     license = 'LICENSE',
-    description = '30and30 Python Tech Residents Core Library',
+    description = 'Tech Residents Core Library',
     long_description = open('README').read(),
 )
