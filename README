@@ -1,4 +1,4 @@
-30and30 Python Core Library
+Tech Residents Python Core Library
 
 INSTALL:
-pip install git+ssh://dev.30and30.com/30and30/repos/techresidents/lib/python/trpycore#egg=trpycore
+pip install git+ssh://dev.techresidents.com/tr/repos/techresidents/lib/python/trpycore#egg=trpycore
