@@ -1,6 +1,7 @@
-from distutils.core import setup
-
 import os
+from distutils.core import setup, Extension
+
+atomic_value = Extension('trpycore.atomic.value', ['trpycore/atomic/value.c'])
 
 def find_packages():
     packages = []
@@ -17,7 +18,8 @@ setup(
     version = '0.5-SNAPSHOT',
     author = 'Tech Residents, Inc.',
     packages = find_packages(),
-    license = 'LICENSE',
+    ext_modules = [atomic_value],
+    license = open('LICENSE').read(),
     description = 'Tech Residents Core Library',
     long_description = open('README').read(),
 )

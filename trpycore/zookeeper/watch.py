@@ -1,8 +1,10 @@
 import bisect
 import hashlib
+import logging
 import os
 import threading
 import uuid
+from collections import deque
 
 import zookeeper
 
@@ -27,7 +29,7 @@ class DataWatch(object):
                 with this object as the sole parameter. Method will be invoked
                 in the context of the underly zookeeper API thread.
             session_observer: optional method to be invoked upon zookeeper
-                session event with Zookeeper.Event as the sole argument.
+                session event with ZookeeperClient.Event as the sole argument.
                 Method will be invoked in the context of the underlying
                 zookeeper API thread.
         """
@@ -117,7 +119,7 @@ class ChildrenWatch(object):
     when the node's children are added or removed.
 
     session_observer method, if provied, will be invoked in the context of the
-    underlying zookeeper API thread (with Zookeeper.Event as teh sole parameter)
+    underlying zookeeper API thread (with ZookeeperClient.Event as teh sole parameter)
     when session events occur.
     """
  
@@ -131,7 +133,7 @@ class ChildrenWatch(object):
                 with this object as the sole parameter. Method will be invoked
                 in the context of the underly zookeeper API thread.
             session_observer: optional method to be invoked upon zookeeper
-                session event with Zookeeper.Event as the sole argument.
+                session event with ZookeeperClient.Event as the sole argument.
                 Method will be invoked in the context of the underlying
                 zookeeper API thread.
         """
@@ -237,19 +239,54 @@ class HashringWatch(object):
     when session events occur.
     """
 
-    def __init__(self, client, path, num_positions=0, position_data=None,
+    class HashringNode(object):
+        def __init__(self, token, data=None, stat=None):
+            self.token = token
+            self.data = data
+            self.stat = stat
+
+        def __cmp__(self, other):
+            if self.token < other.token:
+                return -1
+            elif self.token > other.token:
+                return 1
+            else:
+                return 0
+        
+        def __hash__(self):
+            return self.token.__hash__()
+
+
+    def __init__(self, client, path, positions=None, position_data=None,
             watch_observer=None, session_observer=None, hash_function=None):
         """HashringWatch constructor.
 
         Args:
             client: zookeeper client instance
             path: zookeeper node path to watch
-            num_positions: optional number of positions to occupy on
-                the hashring (nodes to create).
+            positions: optional list of positions to occupy on the
+                hashring (nodes to create). Each position
+                must be a uuid hex string or None. If None, a randomly
+                generated position will be used. Note that in the 
+                case of a position collision, a randomly generated
+                position will also be used.
             position_data: data to associate with the occupied positions (nodes)
-            watch_observer: optional method to be invoked upon hashring change
-                with this object as the sole parameter. Method will be invoked
-                in the context of the underly zookeeper API thread.
+            watch_observer: optional method to be invoked upon hashring change.
+                Method will be invoked in the context of the GHashringWatch greenlet
+                with the following paramaters:
+                    watch: GHashringWatch object,
+                    previous_hashring: hashring prior to changes
+                    current_hashring: hashring after changes
+                    added_nodes: list of added HashRingNode's
+                    removed_nodes: list of removed HashRingNode's 
+            watch_observer: optional method to be invoked upon hashring change.
+                Method will be invoked in the context of the underlying
+                zookeeper API thread with the following parameters:
+                    watch: HashringWatch object,
+                    previous_hashring: hashring prior to changes
+                    current_hashring: hashring after changes
+                    added_nodes: list of added HashRingNode's
+                    removed_nodes: list of removed HashRingNode's 
             session_observer: optional method to be invoked upon zookeeper
                 session event with Zookeeper.Event as the sole argument.
                 Method will be invoked in the context of the underlying
@@ -261,12 +298,23 @@ class HashringWatch(object):
         self._session_observer = session_observer
         self._hash_function = hash_function or hashlib.md5
         self._lock = threading.Lock()
-        self._num_positions = num_positions
+        self._positions = positions or []
         self._position_data = position_data
-
-        self._positions = []
         self._watching = False
         self._running = False
+        self._log = logging.getLogger("%s.%s" % (__name__, self.__class__.__name__))
+        
+        self._occupied_positions = 0
+        self._hashring = []
+        self._children = {}
+        self._num_positions = len(self._positions)
+
+        #Remove None values from positions, since
+        #this indicates that a randomly chosen
+        #position should be used. This is no longer
+        #needed, since we've already calculated
+        #the number of positions needed.
+        self._positions = [p for p in self._positions if p is not None]
 
         def session_observer(event):
             """Internal zookeeper session observer to handle disconnections."""
@@ -282,23 +330,44 @@ class HashringWatch(object):
 
     def _add_hashring_positions(self):
         """Add positions to hashring (create nodes)."""
+
         #If positions have already been added return
-        if self._positions:
+        if self._occupied_positions != 0:
             return
         
+        #Allocate a position queue with requested hashring
+        #positions. These position values will be 
+        #tried first, before backing off to randomly
+        #generated positions.
+        position_queue = deque(self._positions)
+        self._positions = []
+
         #Add our postions to the hashring
         for i in range(0, self._num_positions):
             while True:
                 try:
-                    position = self._hash_function(uuid.uuid4().hex).hexdigest()
+                    if position_queue:
+                        position = position_queue.popleft()
+                    else:
+                        position = self._hash_function(uuid.uuid4().hex).hexdigest()
+
                     self._client.create_path(self._path)
                     data = self._position_data or position
                     self._client.create(os.path.join(self._path, position), data, ephemeral=True)
                     self._positions.append(position)
                     break
                 except zookeeper.NodeExistsException:
-                    #Position collision, keep trying.
-                    pass
+                    #Potential collision.
+                    #Check to see if this is our data. This can happen
+                    #in the event of a brief disconnection.
+                    #If this is the case, continue as usual.
+                    #Otherwise, this is an actual collision,
+                    #so try again.
+                    node_data, stat = self._client.get_data(os.path.join(self._path, position))
+                    if node_data == data:
+                        #False alarm (brief disconnection)
+                        self._positions.append(position)
+                        break
     
     def start(self):
         """Start watching the hashring node."""
@@ -337,22 +406,39 @@ class HashringWatch(object):
             
             #Acquire lock and update with new children and remove old children
             with self._lock:
+                
+                #hashring prior to changes
+                previous_hashring = list(self._hashring)
 
                 #Insert new children
+                added_nodes = []
                 self._children.update(new_children)
                 #Insert new children into the sorted _hashring
-                for child in new_children.keys():
-                    bisect.insort_left(self._hashring, child)
+                for child, (data, stat) in new_children.items():
+                    node = self.HashringNode(child, data, stat)
+                    added_nodes.append(node)
+                    bisect.insort_left(self._hashring, node)
                 
                 #Remove stale children
-                for child in self._children.keys():
+                removed_nodes = []
+                for child, (data, stat) in self._children.items():
                     if child not in children:
                         del self._children[child]
-                        self._hashring.remove(child)
+                        node = self._hashring[self._hashring.index(self.HashringNode(child))]
+                        removed_nodes.append(node)
+                        self._hashring.remove(node)
+                
+                #hashring following changes
+                current_hashring = list(self._hashring)
             
             #Notify watch observers (without lock)
             if self._watching and self._watch_observer:
-                self._watch_observer(self)
+                self._watch_observer(
+                        self,
+                        previous_hashring=previous_hashring,
+                        current_hashring=current_hashring,
+                        added_nodes=added_nodes,
+                        removed_nodes=removed_nodes)
 
         def watcher(handle, type, state, path):
             """Internal watcher to handle changes to hashring.
@@ -367,7 +453,10 @@ class HashringWatch(object):
                 state: zookeeper api state
                 path: zookeeper node path
             """
-            if state == zookeeper.CONNECTED_STATE:
+            if state == zookeeper.CONNECTING_STATE:
+                self._on_disconnected()
+
+            elif state == zookeeper.CONNECTED_STATE:
                 #only invoke the watcher_callback if the event type is CHILD_EVENT
                 watcher_callback = watcher if (self._watching and type == zookeeper.CHILD_EVENT) else None
                 self._client.async_get_children(self._path, watcher_callback, callback)
@@ -378,8 +467,14 @@ class HashringWatch(object):
         """Stop watching the node."""
         self._watching = False
         self._running = False
+
+    def _on_disconnected(self):
+        with self._lock:
+            self._occupied_positions = 0
+            self._hashring = []
+            self._children = {}
     
-    def get_children(self):
+    def children(self):
         """Obtain the lock and return a copy of the node children.
         
         The children node names represent positions on the hashring.
@@ -390,19 +485,55 @@ class HashringWatch(object):
         with self._lock:
             return dict(self._children)
     
-    def get_hashring(self):
-        """Obtain the lock and return a copy of the hashring list.
+    def hashring(self):
+        """Return hashring as ordered list of HashringNode's.
+        
+        Hashring is represented as an ordered list of HashringNode's.
+        The list is ordered by hashring position (HashringNode.token).
 
         Returns:
-            sorted list of hashring positions (children node names)
+            Ordered list of HashringNode's.
         """
         with self._lock:
             return list(self._hashring)
 
-    def get_hashchild(self, data):
-        """Return the selected hashring positions's node data.
+    def preference_list(self, data, hashring=None):
+        """Return a preference list of HashringNode's for the given data.
+        
+        Generates an ordered list of HashringNode's responsible for
+        the data. The list is ordered by node preference, where the
+        first node in the list is the most preferred node to process
+        the data. Upon failure, lower preference nodes in the list
+        should be tried.
+        
+        Args:
+            data: string to hash to find appropriate hashring position.
+            hashring: Optional list of HashringNode's for which
+                to calculate the preference list. If None, the current
+                hashring will be used.
+        Returns:
+            Preference ordered list of HashringNode's responsible
+            for the given data.
+        """
+        if hashring is None:
+            with self._lock:
+                hashring = list(self._hashring)
 
-        The selected node is determined based on the hash
+        data_hash = self._hash_function(data).hexdigest()
+        index = bisect.bisect(hashring, self.HashringNode(data_hash))
+
+        #If we're at the end of the hash ring, loop to the start
+        if index == len(hashring):
+            index = 0
+
+        result = hashring[index:]
+        result.extend(hashring[0:index])
+        return result
+
+    def find_hashring_node(self, data):
+        """Find the hashring node responsible for the given data.
+
+        The selected hashring node is determined based on the hash
         of the user passed "data". The first node to the
         right of the data hash on the hash ring
         will be selected.
@@ -410,15 +541,12 @@ class HashringWatch(object):
         Args:
             data: string to hash to find appropriate hashring position.
         Returns:
-            data (string) associated with the selected child.
+            HashringNode responsible for the given data.
+        Raises:
+            RuntimeError if no nodes are available.
         """
-        with self._lock:
-            data_hash = self._hash_function(data).hexdigest()
-            index = bisect.bisect(self._hashring, data_hash)
-
-            #If we're at the end of the hash ring, loop to the start
-            if index == len(self._hashring):
-                index = 0
-
-            position = self._hashring[index]
-            return self._children[position]
+        preference_list = self.preference_list()
+        if len(preference_list):
+            return self.preference_list[0]
+        else:
+            raise RuntimeError("no nodes available")

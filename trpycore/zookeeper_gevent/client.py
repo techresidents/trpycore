@@ -317,10 +317,10 @@ class GZookeeperClient(object):
         self.close()
         self.log.info("GZookeeperClient stopped.")
     
-    def join(self):
+    def join(self, timeout):
         """join GZookeeperClient greenlet."""
         if self.greenlet:
-            self.greenlet.join()
+            self.greenlet.join(timeout)
 
 
     def stop(self):
@@ -675,7 +675,7 @@ class GZookeeperClient(object):
                 async_result.set(None)
             else:
                 async_result.set_exception(self.error_to_exception(return_code))
-
+        
         zookeeper.adelete(self.handle, path, version, callback)
 
         return async_result
