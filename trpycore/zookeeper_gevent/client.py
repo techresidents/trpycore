@@ -318,10 +318,7 @@ class GZookeeperClient(object):
         self.log.info("GZookeeperClient stopped.")
     
     def join(self, timeout):
-        """join GZookeeperClient greenlet."""
-        if self.greenlet:
-            self.greenlet.join(timeout)
-
+        self.greenlet.join(timeout)
 
     def stop(self):
         """Stop the GZookeeperClient by putting the STOP_EVENT in queue.
