@@ -78,7 +78,27 @@ class BasicCounters(Counters):
         for counter_name in counter_names or []:
             counter = BasicCounter(counter_name, self.initial_value)
             self.counters[counter_name] = counter
-    
+
+    def __contains__(self, counter_name):
+        """Check if counter_name is contained within Counters.
+
+        Returns:
+            True if counter_name exists, False otherwise.
+        """
+        return counter_name in self.counters
+
+    def __getitem__(self, counter_name):
+        """Get counter value for counter_name if it exists.
+        
+        Returns:
+            Counter value if counter_name exists.
+        Raises:
+            KeyError if counter_name does not exist.
+        """
+        if counter_name not in self.counters:
+            raise KeyError
+        return self.counters[counter_name].get()
+
     def _get_or_create_counter(self, counter_name):
         """Helper method to get or create counters on demand.
         

@@ -47,7 +47,26 @@ class Counter(object):
 
 class Counters(object):
     """Counters abstract base class."""
-    
+
+    @abc.abstractmethod
+    def __contains__(self, counter_name):
+        """Check if counter_name is contained within Counters.
+
+        Returns:
+            True if counter_name exists, False otherwise.
+        """
+
+    @abc.abstractmethod
+    def __getitem__(self, counter_name):
+        """Get counter value for counter_name if it exists.
+        
+        Returns:
+            Counter value if counter_name exists.
+        Raises:
+            KeyError if counter_name does not exist.
+        """
+        return
+
     @abc.abstractmethod
     def get_counter(self, counter_name):
         """Get Counter object.
