@@ -1,4 +1,5 @@
 import os
+import setuptools
 from distutils.core import setup, Extension
 
 atomic_value = Extension('trpycore.atomic.value', ['trpycore/atomic/value.c'])
