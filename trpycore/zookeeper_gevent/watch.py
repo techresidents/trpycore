@@ -66,6 +66,8 @@ class GDataWatch(object):
     def start(self):
         """Start watching node."""
         if not self._running:
+            self._log.info("Starting %s(path=%s) ..." % 
+                    (self.__class__.__name__, self._path))
             self._watching = True
             gevent.spawn(self._run)
     
@@ -102,6 +104,9 @@ class GDataWatch(object):
     def stop(self):
         """Stop watching node."""
         if self._running:
+            self._log.info("Stopping %s(path=%s) ..." % 
+                    (self.__class__.__name__, self._path))
+
             self._watching = False
             self._queue.put(self._STOP_EVENT)
     
@@ -180,6 +185,9 @@ class GChildrenWatch(object):
     def start(self):
         """Start watching node's children."""
         if not self._running:
+            self._log.info("Starting %s(path=%s) ..." % 
+                    (self.__class__.__name__, self._path))
+
             self._watching = True
             gevent.spawn(self._run)
     
@@ -231,6 +239,9 @@ class GChildrenWatch(object):
     def stop(self):
         """Stop watching children."""
         if self._running:
+            self._log.info("Stopping %s(path=%s) ..." % 
+                    (self.__class__.__name__, self._path))
+
             self._watching = False
             self._queue.put(self._STOP_EVENT)
     
@@ -265,7 +276,17 @@ class GHashringWatch(object):
     """
 
     class HashringNode(object):
+        """Hashring node class."""
+
         def __init__(self, token, data=None, stat=None):
+            """HashringNode constructor.
+
+            Args:
+                token: 128-bit integer token identifying the node's
+                    position on the hashring.
+                data: Optional string data associated with the node.
+                stat: Zookeeper stat dict.
+            """
             self.token = token
             self.data = data
             self.stat = stat
@@ -293,10 +314,10 @@ class GHashringWatch(object):
             path: zookeeper node path to watch
             positions: optional list of positions to occupy on the
                 hashring (nodes to create). Each position
-                must be a uuid hex string or None. If None, a randomly
-                generated position will be used. Note that in the 
-                case of a position collision, a randomly generated
-                position will also be used.
+                must be a 128-bit integer in integer or hex string format.
+                If None, a randomly generated position will be used.
+                Note that in the case of a position collision, a randomly
+                generated position will also be used.
             position_data: data to associate with the occupied positions (nodes)
             watch_observer: optional method to be invoked upon hashring change.
                 Method will be invoked in the context of the GHashringWatch greenlet
@@ -318,7 +339,7 @@ class GHashringWatch(object):
         self._session_observer = session_observer
         self._hash_function = hash_function or hashlib.md5
         self._queue = gevent.queue.Queue()
-        self._positions = positions or []
+        self._positions =[]
         self._position_data = position_data
         self._greenlet = None
         self._watching = False
@@ -328,14 +349,19 @@ class GHashringWatch(object):
         self._occupied_positions = 0
         self._hashring = []
         self._children = {}
-        self._num_positions = len(self._positions)
+        self._num_positions = len(positions)
 
         #Remove None values from positions, since
         #this indicates that a randomly chosen
         #position should be used. This is no longer
         #needed, since we've already calculated
         #the number of positions needed.
-        self._positions = [p for p in self._positions if p is not None]
+        for position in positions:
+            if position is not None:
+                if isinstance(position, basestring):
+                    self._positions.append(long(position, 16))
+                else:
+                    self._positions.append(long(position))
 
         def session_observer(event):
             """Internal zookeeper session observer to handle disconnections."""
@@ -352,6 +378,9 @@ class GHashringWatch(object):
     def start(self):
         """Start watching hashring node."""
         if not self._running:
+            self._log.info("Starting %s(path=%s) ..." % 
+                    (self.__class__.__name__, self._path))
+
             self._watching = True
             self._greenlet = gevent.spawn(self._run)
 
@@ -376,11 +405,12 @@ class GHashringWatch(object):
                     if position_queue:
                         position = position_queue.popleft()
                     else:
-                        position = self._hash_function(uuid.uuid4().hex).hexdigest()
+                        position = uuid.uuid4().int
 
                     self._client.create_path(self._path)
                     data = self._position_data or position
-                    self._client.create(os.path.join(self._path, position), data, ephemeral=True)
+                    hex_position = "%032x" % position
+                    self._client.create(os.path.join(self._path, hex_position), data, ephemeral=True)
                     self._positions.append(position)
                     break
                 except zookeeper.NodeExistsException:
@@ -390,7 +420,7 @@ class GHashringWatch(object):
                     #If this is the case, continue as usual.
                     #Otherwise, this is an actual collision,
                     #so try again.
-                    node_data, stat = self._client.get_data(os.path.join(self._path, position))
+                    node_data, stat = self._client.get_data(os.path.join(self._path, hex_position))
                     if node_data == data:
                         #False alarm (brief disconnection)
                         self._positions.append(position)
@@ -401,7 +431,8 @@ class GHashringWatch(object):
 
         for position in self._positions:
             try:
-                self._client.delete(os.path.join(self._path, position))
+                hex_position = "%032x" % position
+                self._client.delete(os.path.join(self._path, hex_position))
             except zookeeper.NoNodeException as error:
                 self._log.exception(error)
     
@@ -442,7 +473,8 @@ class GHashringWatch(object):
                         self._children[child] = (data, stat)
 
                         #Insort hash ring node into the sorted _hashring
-                        node = self.HashringNode(child, data, stat)
+                        position = long(child, 16)
+                        node = self.HashringNode(position, data, stat)
                         added_nodes.append(node)
                         bisect.insort(self._hashring, node)
                 
@@ -450,8 +482,9 @@ class GHashringWatch(object):
                 removed_nodes = []
                 for child in self._children.keys():
                     if child not in children:
+                        position = long(child, 16)
                         del self._children[child]
-                        node = self._hashring[self._hashring.index(self.HashringNode(child))]
+                        node = self._hashring[self._hashring.index(self.HashringNode(position))]
                         removed_nodes.append(node)
                         self._hashring.remove(node)
 
@@ -489,6 +522,9 @@ class GHashringWatch(object):
     def stop(self):
         """Stop watching the hashring."""
         if self._running:
+            self._log.info("Stopping %s(path=%s) ..." % 
+                    (self.__class__.__name__, self._path))
+
             self._watching = False
             self._queue.put(self._STOP_EVENT)
 
@@ -538,7 +574,8 @@ class GHashringWatch(object):
         """
         hashring = hashring or self._hashring
         data_hash = self._hash_function(data).hexdigest()
-        index = bisect.bisect(hashring, self.HashringNode(data_hash))
+        data_token = long(data_hash, 16)
+        index = bisect.bisect(hashring, self.HashringNode(data_token))
 
         #If we're at the end of the hash ring, loop to the start
         if index == len(hashring):
