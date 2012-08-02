@@ -302,6 +302,9 @@ class GHashringWatch(object):
         def __hash__(self):
             return self.token.__hash__()
 
+        def __repr__(self):
+            return "%s(%032x)" % (self.__class__.__name__, self.token)
+
 
     _STOP_EVENT = object()
 
@@ -477,6 +480,7 @@ class GHashringWatch(object):
                         node = self.HashringNode(position, data, stat)
                         added_nodes.append(node)
                         bisect.insort(self._hashring, node)
+                        print self._hashring
                 
                 #Remove old children
                 removed_nodes = []

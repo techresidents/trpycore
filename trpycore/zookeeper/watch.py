@@ -281,6 +281,9 @@ class HashringWatch(object):
         def __hash__(self):
             return self.token.__hash__()
 
+        def __repr__(self):
+            return "%s(%032x)" % (self.__class__.__name__, self.token)
+
 
     def __init__(self, client, path, positions=None, position_data=None,
             watch_observer=None, session_observer=None, hash_function=None):
