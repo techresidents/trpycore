@@ -2,3 +2,7 @@ Tech Residents Python Core Library
 
 INSTALL:
 pip install git+ssh://dev.techresidents.com/tr/repos/techresidents/lib/python/trpycore#egg=trpycore
+
+DEVELOPMENT
+mkvirtualenv trpycore
+python setup.py develop

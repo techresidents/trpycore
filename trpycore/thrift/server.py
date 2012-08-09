@@ -5,6 +5,8 @@ import Queue
 from thrift.server import TServer
 from thrift.transport import TTransport
 
+from trpycore.thrift.transport import TransportClosedException
+
 class TThreadPoolServer(TServer.TServer, object):
     """Server with a fixed size pool of threads which service requests.
     
@@ -64,6 +66,7 @@ class TThreadPoolServer(TServer.TServer, object):
 
     def serve(self):
         """Start a fixed number of worker threads and put client into a queue.
+
         This method will never return.            
         """
         self.running = True
@@ -78,23 +81,37 @@ class TThreadPoolServer(TServer.TServer, object):
 
         # Pump the socket for clients
         self.serverTransport.listen()
+
+        errors = 0
         while self.running:
             try:
                 #blocking, non-interruptable accept call
                 client = self.serverTransport.accept()
                 self.clients.put(client)
-            except Exception, x:
-                logging.exception(x)
+                errors = 0
+            except TransportClosedException:
+                pass
+            except Exception as error:
+                errors += 1
+                logging.exception(error)
+
+                if errors >= 10:
+                    self.running = False
+                    raise
+        
+        self.running = False
 
     def stop(self):
         """Stop worker threads.
-            Worker threads will not be stopped until they finish
-            servicing the currently open connections. This may
-            take a considerable amount of time.
 
-            Additionally, calling stop will not cause the serve()
-            method to unblock and return.
+        Worker threads will not be stopped until they finish
+        servicing the currently open connections. This may
+        take a considerable amount of time.
+
+        Additionally, calling stop will not cause the serve()
+        method to unblock and return.
         """
         self.running = False
+        self.serverTransport.close()
         for i in range(self.threads):
             self.clients.put(TThreadPoolServer.STOP_ITEM)

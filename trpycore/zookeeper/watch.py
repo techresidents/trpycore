@@ -9,7 +9,10 @@ from collections import deque
 import zookeeper
 
 class DataWatch(object):
-    """DataWatch provides a convenient wrapper for monitoring the value of a Zookeeper node.
+    """DataWatch provides a robust watcher for a Zookeeper node's data.
+
+    GDataWatch properly handles node creation and deletion, as well
+    as zookeeper session expirations.
 
     watch_observer method, if provided, will be invoked in the context of the 
     underlying zookeeper API thread (with this object as the sole parameter)
@@ -46,15 +49,92 @@ class DataWatch(object):
 
         def session_observer(event):
             """Internal zookeeper session observer to handle disconnections."""
-            #In the event that the watch was started before the client is connected
-            #we will start watching as soon as we do connect. 
-            if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
-                self.start()
+            if not self._watching:
+                return
+
+            if event.state == zookeeper.CONNECTED_STATE:
+                #In the event that the watch was started before the client is connected
+                #we will start watching as soon as we do connect. 
+                if not self._running:
+                    self.start()
+            elif event.state == zookeeper.CONNECTING_STATE:
+                #In the event of a disconnection we do not reset state.
+                #Zookeeper should be running in a cluster, so we're assuming
+                #that even in the event of servers failures or a network
+                #partition we will be able to reconnect to at least
+                #one of the zookeeper servers.
+                pass
+            elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                self._on_session_expiration()
             
+            #notify ession observer
             if self._watching and self._session_observer:
                 self._session_observer(event)
         
         self._client.add_session_observer(session_observer)
+
+    def _callback(self, handle, return_code, data, stat):
+        """Zookeeper async_get_data callback.
+
+        This method will be invoked in the context of the
+        Zookeeper API thread upon completion of the
+        async get data request.
+
+        Args:
+            handle: zookeeper handle
+            return_code: zookeeper return code
+            data: zookeeper node data
+            stat: zookeeper node stat dict
+        """
+        try:
+            if return_code != zookeeper.OK:
+                raise self._client.error_to_exception(return_code)
+            with self._lock:
+                self._data = data
+                self._stat = stat
+        except zookeeper.NoNodeException:
+            #Setup an exists watch so we'll be notified when this
+            #node is created. Note that for now this is a blocking
+            #operation to simplify the logic. This is excuting
+            #in a borrowed thread, but this should not happen
+            #often and should be a quick operation.
+            stat = self._client.exists(self._path, self._watcher)
+
+            #Double check if node exists. If it now exists, it was bad timing,
+            #so schedule another async_get_data.
+            if stat is not None:
+                self._client.async_get_data(self._path, self._watcher, self._callback)
+            else:
+                self._log.warning("watch node '%s' does not exist." % self._path)
+                self._log.warning("monitoring node '%s' for creation." % self._path)
+                with self._lock:
+                    self._data = None
+                    self._stat = None
+        except zookeeper.ClosingException:
+            pass
+        except Exception as error:
+            if self._watching:
+                self._log.exception(error)
+            else:
+                self._log.warning(str(error))
+    
+        if self._watching and self._watch_observer:
+            self._watch_observer(self)
+    
+    def _watcher(self, event):
+        """Internal watcher to handle changes to data.
+    
+        This method will invoke an async_get_data to get the updated
+        data. The result will be received in callback() which
+        will update our internal data.
+    
+        Args:
+            event: ZookeeperClient.Event object
+        """
+        if event.state == zookeeper.CONNECTED_STATE:
+            #Only invoke the watcher observer if watching
+            watcher_callback = self._watcher if self._watching else None
+            self._client.async_get_data(self._path, watcher_callback, self._callback)
     
     def start(self):
         """Start watching the zookeeper node."""
@@ -70,21 +150,7 @@ class DataWatch(object):
         
         self._running = True
 
-        def callback(handle, return_code, data, stat):
-            with self._lock:
-                self._data = data
-                self._stat = stat
-
-            if self._watching and self._watch_observer:
-                self._watch_observer(self)
-
-        def watcher(handle, type, state, path):
-            if state == zookeeper.CONNECTED_STATE:
-                #Only invoke the watcher observer if the event type is CHILD_EVENT and we're wating
-                watcher_callback = watcher if (self._watching and type == zookeeper.CHILD_EVENT) else None
-                self._client.async_get_children(self._path, watcher_callback, callback)
-        
-        self._client.async_get_data(self._path, watcher, callback)
+        self._client.async_get_data(self._path, self._watcher, self._callback)
 
     def stop(self):
         """Stop watching the node."""
@@ -93,6 +159,19 @@ class DataWatch(object):
 
         self._watching = False
         self._running = False
+
+    def join(self, timeout=None):
+        """Join watch."""
+        return
+
+    def _on_session_expiration(self):
+        """Helper to reset state in the event of zookeeper session expiration."""
+        #Set running to false, so that the watch will be
+        #reestablished upon reconnection.
+        self._running = False
+        with self._lock:
+            self._data = None
+            self._stat = None
     
     def get_data(self):
         """Get zookeeper node data.
@@ -119,8 +198,11 @@ class DataWatch(object):
             return dict(self._stat)
 
 class ChildrenWatch(object):
-    """ChildrenWatch provides a convenient wrapper for monitoring the existence
-       of Zookeeper child nodes and their INITIAL data.
+    """Provides a robust watcher for a Zookeeper node's children.
+
+    ChildrenWatch properly handles node creation and deletion, as well
+    as zookeeper session expirations. Note that changes to a child's
+    data will not be watched.
 
     watch_observer method, if provided, will be invoked in the context of the 
     underlying zookeeper API thread (with this object as the sole parameter)
@@ -157,32 +239,43 @@ class ChildrenWatch(object):
 
         def session_observer(event):
             """Internal zookeeper session observer to handle disconnections."""
-            #In the event that the watch was started before the client is connected
-            #we will start watching as soon as we do connect. 
-            if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
-                self.start()
-
+            if event.state == zookeeper.CONNECTED_STATE:
+                #In the event that the watch was started before the client is connected
+                #we will start watching as soon as we do connect. 
+                if self._watching and (not self._running):
+                    self.start()
+            elif event.state == zookeeper.CONNECTING_STATE:
+                #In the event of a disconnection we do not reset state.
+                #Zookeeper should be running in a cluster, so we're assuming
+                #that even in the event of servers failures or a network
+                #partition we will be able to reconnect to at least
+                #one of the zookeeper servers.
+                pass
+            elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                self._on_session_expiration()
+            
+            #notify ession observer
             if self._watching and self._session_observer:
                 self._session_observer(event)
         
         self._client.add_session_observer(session_observer)
-    
-    def start(self):
-        """Start watching the node."""
-        self._watching = True
 
-        if not self._client.connected:
-            return
-        
-        self._log.info("Starting %s(path=%s) ..." % 
-                (self.__class__.__name__, self._path))
+    def _callback(self, handle, return_code, children):
+        """Zookeeper async_get_data callback.
 
-        self._running = True
+        This method will be invoked in the context of the
+        Zookeeper API thread upon completion of the
+        async get data request.
 
-        def callback(handle, return_code, children):
+        Args:
+            handle: zookeeper handle
+            return_code: zookeeper return code
+            children: list of children node paths
+        """
+        try:
             if return_code != zookeeper.OK:
-                return
-            
+                raise self._client.error_to_exception(return_code)
+
             #Get the initial node data for new children (without lock)
             #Reading of _children without the lock should be safe since
             #we're the only writer. This is assuming that the underlying
@@ -197,22 +290,69 @@ class ChildrenWatch(object):
             #Acquire lock and update with new children and remove old children
             with self._lock:
                 self._children.update(new_children)
-
+    
                 for child in self._children.keys():
                     if child not in children:
                         del self._children[child]
             
-            #Notify watch observers (without lock)
-            if self._watching and self._watch_observer:
-                self._watch_observer(self)
+        except zookeeper.NoNodeException:
+            #Setup an exists watch so we'll be notified when this
+            #node is created. Note that for now this is a blocking
+            #operation to simplify the logic. This is excuting
+            #in a borrowed thread, but this should not happen
+            #often and should be a quick operation.
+            stat = self._client.exists(self._path, self._watcher)
 
-        def watcher(handle, type, state, path):
-            if state == zookeeper.CONNECTED_STATE:
-                #only invoke the watcher_callback if the event type is CHILD_EVENT
-                watcher_callback = watcher if (self._watching and type == zookeeper.CHILD_EVENT) else None
-                self._client.async_get_children(self._path, watcher_callback, callback)
+            #Double check if node exists. If it now exists, it was bad timing,
+            #so schedule another async_get_data.
+            if stat is not None:
+                self._client.async_get_children(self._path, self._watcher, self._callback)
+            else:
+                self._log.warning("watch node '%s' does not exist." % self._path)
+                self._log.warning("monitoring node '%s' for creation." % self._path)
+                with self._lock:
+                    self._children = {}
+        except zookeeper.ClosingException:
+            pass
+        except Exception as error:
+            if self._watching:
+                self._log.exception(error)
+            else:
+                self._log.warning(str(error))
 
-        self._client.async_get_children(self._path, watcher, callback)
+        #Notify watch observers (without lock)
+        if self._watching and self._watch_observer:
+            self._watch_observer(self)
+        
+    
+    def _watcher(self, event):
+        """Internal watcher to handle changes to children / node creation.
+    
+        This method will invoke an async_get_children to get the updated
+        data. The result will be received in callback() which
+        will update our internal data.
+    
+        Args:
+            event: ZookeeperClient.Event object
+        """
+        if event.state == zookeeper.CONNECTED_STATE:
+            #only invoke the watcher_callback if watching
+            watcher_callback = self._watcher if self._watching else None
+            self._client.async_get_children(self._path, watcher_callback, self._callback)
+    
+    def start(self):
+        """Start watching the node."""
+        self._watching = True
+
+        if not self._client.connected:
+            return
+        
+        self._log.info("Starting %s(path=%s) ..." % 
+                (self.__class__.__name__, self._path))
+
+        self._running = True
+
+        self._client.async_get_children(self._path, self._watcher, self._callback)
     
     def stop(self):
         """Stop watching the node."""
@@ -221,6 +361,18 @@ class ChildrenWatch(object):
 
         self._watching = False
         self._running = False
+
+    def join(self, timeout=None):
+        """Join watch."""
+        return
+
+    def _on_session_expiration(self):
+        """Helper to reset state in the event of zookeeper session expiration."""
+        #Set running to false, so that the watch will be
+        #reestablished upon reconnection.
+        self._running = False
+        with self._lock:
+            self._children = {}
 
     def get_children(self):
         """Obtain the lock and return a copy of the children.
@@ -351,11 +503,22 @@ class HashringWatch(object):
 
         def session_observer(event):
             """Internal zookeeper session observer to handle disconnections."""
-            #In the event that the watch was started before the client is connected
-            #we will start watching as soon as we do connect. 
-            if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
-                self.start()
-
+            if event.state == zookeeper.CONNECTED_STATE:
+                #In the event that the watch was started before the client is connected
+                #we will start watching as soon as we do connect. 
+                if self._watching and (not self._running):
+                    self.start()
+            elif event.state == zookeeper.CONNECTING_STATE:
+                #In the event of a disconnection we do not reset state.
+                #Zookeeper should be running in a cluster, so we're assuming
+                #that even in the event of servers failures or a network
+                #partition we will be able to reconnect to at least
+                #one of the zookeeper servers.
+                pass
+            elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                self._on_session_expiration()
+            
+            #notify ession observer
             if self._watching and self._session_observer:
                 self._session_observer(event)
         
@@ -367,6 +530,11 @@ class HashringWatch(object):
         #If positions have already been added return
         if self._occupied_positions != 0:
             return
+
+        try:
+            self._client.create_path(self._path)
+        except zookeeper.NodeExistsException:
+            pass
         
         #Allocate a position queue with requested hashring
         #positions. These position values will be 
@@ -384,7 +552,6 @@ class HashringWatch(object):
                     else:
                         position = uuid.uuid4().int
 
-                    self._client.create_path(self._path)
                     data = self._position_data or position
                     hex_position = "%032x" % position
                     self._client.create(os.path.join(self._path, hex_position), data, ephemeral=True)
@@ -412,6 +579,84 @@ class HashringWatch(object):
                 self._client.delete(os.path.join(self._path, hex_position))
             except zookeeper.NoNodeException as error:
                 self._log.exception(error)
+
+    def _callback(self, handle, return_code, children):
+        """Internal callback for async_get_children.
+    
+        This is invoked when positions are added or removed
+        from the hashring.
+        
+        Args:
+            handle: zookeeper api handle
+            return_code: zookeeper return code
+            children: list of zookeeper children node names
+        """
+        if return_code != zookeeper.OK:
+            return
+        
+        #Get the initial node data for new children (without lock)
+        #Reading of _children without the lock should be safe since
+        #we're the only writer. This is assuming that the underlying
+        #zookeeper api is only dispatching events in a single thread.
+        #This should be the case since zookeeper goes through great
+        #lengths to ensure strict ordering.
+        new_children = {}
+        for child in children:
+            if child not in self._children:
+                new_children[child] = self._client.get_data(os.path.join(self._path, child))
+        
+        #Acquire lock and update with new children and remove old children
+        with self._lock:
+            
+            #hashring prior to changes
+            previous_hashring = list(self._hashring)
+    
+            #Insert new children
+            added_nodes = []
+            self._children.update(new_children)
+            #Insert new children into the sorted _hashring
+            for child, (data, stat) in new_children.items():
+                position = long(child, 16)
+                node = self.HashringNode(position, data, stat)
+                added_nodes.append(node)
+                bisect.insort_left(self._hashring, node)
+            
+            #Remove stale children
+            removed_nodes = []
+            for child, (data, stat) in self._children.items():
+                if child not in children:
+                    position = long(child, 16)
+                    del self._children[child]
+                    node = self._hashring[self._hashring.index(self.HashringNode(position))]
+                    removed_nodes.append(node)
+                    self._hashring.remove(node)
+            
+            #hashring following changes
+            current_hashring = list(self._hashring)
+        
+        #Notify watch observers (without lock)
+        if self._watching and self._watch_observer:
+            self._watch_observer(
+                    self,
+                    previous_hashring=previous_hashring,
+                    current_hashring=current_hashring,
+                    added_nodes=added_nodes,
+                    removed_nodes=removed_nodes)
+    
+    def _watcher(self, event):
+        """Internal watcher to handle changes to hashring.
+    
+        This method will invoke an async_get_children to get the updated
+        hashring positions. The result will be received in callback() which
+        will update our internal data.
+    
+        Args:
+            event: ZookeeperClient.Event object
+        """
+        if event.state == zookeeper.CONNECTED_STATE:
+            #only invoke the watcher_callback if watching
+            watcher_callback = self._watcher if self._watching else None
+            self._client.async_get_children(self._path, watcher_callback, self._callback)
     
     def start(self):
         """Start watching the hashring node."""
@@ -426,101 +671,26 @@ class HashringWatch(object):
         self._running = True
         self._add_hashring_positions()
 
-        def callback(handle, return_code, children):
-            """Internal callback for async_get_children.
-
-            This is invoked when positions are added or removed
-            from the hashring.
-            
-            Args:
-                handle: zookeeper api handle
-                return_code: zookeeper return code
-                children: list of zookeeper children node names
-            """
-            if return_code != zookeeper.OK:
-                return
-            
-            #Get the initial node data for new children (without lock)
-            #Reading of _children without the lock should be safe since
-            #we're the only writer. This is assuming that the underlying
-            #zookeeper api is only dispatching events in a single thread.
-            #This should be the case since zookeeper goes through great
-            #lengths to ensure strict ordering.
-            new_children = {}
-            for child in children:
-                if child not in self._children:
-                    new_children[child] = self._client.get_data(os.path.join(self._path, child))
-            
-            #Acquire lock and update with new children and remove old children
-            with self._lock:
-                
-                #hashring prior to changes
-                previous_hashring = list(self._hashring)
-
-                #Insert new children
-                added_nodes = []
-                self._children.update(new_children)
-                #Insert new children into the sorted _hashring
-                for child, (data, stat) in new_children.items():
-                    position = long(child, 16)
-                    node = self.HashringNode(position, data, stat)
-                    added_nodes.append(node)
-                    bisect.insort_left(self._hashring, node)
-                
-                #Remove stale children
-                removed_nodes = []
-                for child, (data, stat) in self._children.items():
-                    if child not in children:
-                        position = long(child, 16)
-                        del self._children[child]
-                        node = self._hashring[self._hashring.index(self.HashringNode(position))]
-                        removed_nodes.append(node)
-                        self._hashring.remove(node)
-                
-                #hashring following changes
-                current_hashring = list(self._hashring)
-            
-            #Notify watch observers (without lock)
-            if self._watching and self._watch_observer:
-                self._watch_observer(
-                        self,
-                        previous_hashring=previous_hashring,
-                        current_hashring=current_hashring,
-                        added_nodes=added_nodes,
-                        removed_nodes=removed_nodes)
-
-        def watcher(handle, type, state, path):
-            """Internal watcher to handle changes to hashring.
-
-            This method will invoke an async_get_children to get the updated
-            hashring positions. The result will be received in callback() which
-            will update our internal data.
-
-            Args:
-                handle: zookeeper api handle
-                type: zookeeper api event type
-                state: zookeeper api state
-                path: zookeeper node path
-            """
-            if state == zookeeper.CONNECTING_STATE:
-                self._on_disconnected()
-
-            elif state == zookeeper.CONNECTED_STATE:
-                #only invoke the watcher_callback if the event type is CHILD_EVENT
-                watcher_callback = watcher if (self._watching and type == zookeeper.CHILD_EVENT) else None
-                self._client.async_get_children(self._path, watcher_callback, callback)
-
-        self._client.async_get_children(self._path, watcher, callback)
+        self._client.async_get_children(self._path, self._watcher, self._callback)
     
     def stop(self):
         """Stop watching the node."""
         self._log.info("Stopping %s(path=%s) ..." % 
                 (self.__class__.__name__, self._path))
-
+        
+        self._remove_hashring_positions()
         self._watching = False
         self._running = False
+    
+    def join(self, timeout=None):
+        """Join watch."""
+        return
 
-    def _on_disconnected(self):
+    def _on_session_expiration(self):
+        """Helper to reset state in the event of zookeeper session expiration."""
+        #Set running to false, so that the watch will be
+        #reestablished upon reconnection.
+        self._running = False
         with self._lock:
             self._occupied_positions = 0
             self._hashring = []
@@ -598,8 +768,8 @@ class HashringWatch(object):
         Raises:
             RuntimeError if no nodes are available.
         """
-        preference_list = self.preference_list()
+        preference_list = self.preference_list(data)
         if len(preference_list):
-            return self.preference_list[0]
+            return preference_list[0]
         else:
             raise RuntimeError("no nodes available")

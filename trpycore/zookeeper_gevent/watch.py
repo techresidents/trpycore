@@ -11,7 +11,10 @@ import gevent.queue
 import zookeeper
 
 class GDataWatch(object):
-    """GDataWatch provides a convenient wrapper for monitoring the value of a Zookeeper node.
+    """GDataWatch provides a robust data watcher for a Zookeeper node.
+    
+    GDataWatch properly handles node creation and deletion, as well
+    as zookeeper session expirations.
 
     watch_observer method, if provided, will be invoked in the context of the 
     the DataWatch greenlet (with this object as the sole parameter)
@@ -23,6 +26,7 @@ class GDataWatch(object):
    """
     
     #Event to stop the watcher
+    _START_EVENT = object()
     _STOP_EVENT = object()
 
     def __init__(self, client, path, watch_observer=None, session_observer=None):
@@ -53,10 +57,18 @@ class GDataWatch(object):
 
         def session_observer(event):
             """Internal session observer to handle disconnections."""
-            #Restart the watcher upon reconnection if we're watching and not running
-            if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
-                self.start()
+            if not self._watching:
+                return
+
+            if event.state == zookeeper.CONNECTED_STATE:
+                #Restart the watcher upon reconnection if we're not running
+                if not self._running:
+                    self.start()
+            elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                self._on_session_expiration()
             
+            self._queue.put(event)
+
             if self._session_observer:
                 self._session_observer(event)
         
@@ -69,37 +81,94 @@ class GDataWatch(object):
             self._log.info("Starting %s(path=%s) ..." % 
                     (self.__class__.__name__, self._path))
             self._watching = True
+            self._queue.put(self._START_EVENT)
             gevent.spawn(self._run)
+    
+    def _watcher(self, event):
+        """Internal watcher to be invoked when data/exists changes.
+    
+        Method will be invoked in the context of GZookeeperClient
+        greenlet. It will put an event on the _queue to signal
+        the _run method to awaken and update the data
+        in the context of the GDataWatch greenlet.
+        """
+        self._queue.put(event)
+    
+    def _update(self):
+        """Helper method to be invoked upon data change.
+
+        This method will update the object's local data
+        with data retrieved from zookeeper.  Upon success,
+        all watch observers will be invoked.
+
+        Raises:
+            Zookeeper exceptions.
+        """
+        try:
+            self._data, self._stat = self._client.get_data(self._path, self._watcher)
+        except zookeeper.NoNodeException:
+            stat = self._client.exists(self._path, self._watcher)
+
+            #Double check to make sure the node still does not exist.
+            #If it exists, we had bad timing, so try again.
+            if stat is not None:
+                self._data, self._stat = self._client.get_data(self._path, self._watcher)
+            else:
+                self._log.warning("watch node '%s' does not exist." % self._path)
+                self._log.warning("monitoring node '%s' for creation." % self._path)
+                self._data = None
+                self._stat = None
+
+        if self._watch_observer:
+            self._watch_observer(self)
     
     def _run(self):
         """Method will run in GDataWatch greenlet."""
-        if not self._client.connected:
-            return
-        
+
         self._running = True
+        errors = 0
 
-        def watcher(event):
-            self._queue.put(event)
-
-        while self._watching:
+        while self._running:
             try:
-                self._data, self._stat = self._client.get_data(self._path, watcher)
-                if self._observer:
-                    self._observer(self._data, self._stat)
-                
-                if self._watch_observer:
-                    self._watch_observer(self)
-
                 event = self._queue.get()
+
                 if event is self._STOP_EVENT:
                     break
+                elif event is self._START_EVENT:
+                    if self._client.connected:
+                        self._update()
+                elif event.state == zookeeper.CONNECTING_STATE:
+                    #In the event of a disconnection we do not reset state.
+                    #Zookeeper should be running in a cluster, so we're assuming
+                    #that even in the event of servers failures or a network
+                    #partition we will be able to reconnect to at least
+                    #one of the zookeeper servers.
+                    pass
+                elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                    self._on_session_expiration()
+                elif event.state == zookeeper.CONNECTED_STATE:
+                    self._update()
+                    errors = 0
 
             except zookeeper.ConnectionLossException:
-                break
+                continue
+            except zookeeper.SessionExpiredException:
+                continue
+            except zookeeper.ClosingException:
+                continue
             except Exception as error:
+                errors = errors + 1
                 self._log.exception(error)
+                if errors > 10:
+                    self.log.error("max errors exceeded: exiting watch.")
+                    break
         
         self._running = False
+
+    def _on_session_expiration(self):
+        """Helper to reset state in the event of zookeeper session expiration"""
+        self._data = None
+        self._stat = None
     
     def stop(self):
         """Stop watching node."""
@@ -132,8 +201,11 @@ class GDataWatch(object):
 
 
 class GChildrenWatch(object):
-    """GChildrenWatch provides a convenient wrapper for monitoring the existence
-       of a zookeeper node's children and their INITIAL data.
+    """Provides a robust watcher for a Zookeeper node's children.
+
+    GChildrenWatch properly handles node creation and deletion, as well
+    as zookeeper session expirations. Note that changes to a child's
+    data will not be watched.
 
     watch_observer method, if provided, will be invoked in the context of the 
     the GChildrenWatch greenlet (with this object as the sole parameter)
@@ -144,6 +216,7 @@ class GChildrenWatch(object):
     when session events occur.
    """
 
+    _START_EVENT = object()
     _STOP_EVENT = object()
 
     def __init__(self, client, path, watch_observer=None, session_observer=None):
@@ -173,10 +246,18 @@ class GChildrenWatch(object):
 
         def session_observer(event):
             """Internal zookeeper session observer to handle disconnections."""
-            #Restart the watcher upon reconnection if we're watching and not running
-            if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
-                self.start()
+            if not self._watching:
+                return
+
+            if event.state == zookeeper.CONNECTED_STATE:
+                #Restart the watcher upon reconnection if we're not running
+                if not self._running:
+                    self.start()
+            elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                self._on_session_expiration()
             
+            self._queue.put(event)
+
             if self._session_observer:
                 self._session_observer(event)
         
@@ -189,52 +270,103 @@ class GChildrenWatch(object):
                     (self.__class__.__name__, self._path))
 
             self._watching = True
+            self._queue.put(self._START_EVENT)
             gevent.spawn(self._run)
+
+    def _watcher(self, event):
+        """Internal node watcher method.
     
+        watcher will be invoked in the context of GZookeeperClient
+        greenlet. It will put the event on the _queue so that it
+        can be handle in _run method and update the children
+        accordingly.
+        """
+        self._queue.put(event)
+    
+    def _update(self):
+        """Helper method to be invoked upon children change.
+
+        This method will update the object's local data
+        with data retrieved from zookeeper. Upon success,
+        all watch observers will be invoked.
+
+        Raises:
+            Zookeeper exceptions.
+        """
+        try:
+            children = self._client.get_children(self._path, self._watcher)
+            
+            #Add new children
+            for child in children:
+                if child not in self._children:
+                    self._children[child] = self._client.get_data(os.path.join(self._path, child))
+            
+            #Remove old children
+            for child in self._children.keys():
+                if child not in children:
+                    del self._children[child]
+
+        except zookeeper.NoNodeException:
+            stat = self._client.exists(self._path, self._watcher)
+
+            #Double check to make sure the node still does not exist.
+            #If it exists, we had bad timing, so try again.
+            if stat is not None:
+                self._update()
+            else:
+                self._log.warning("watch node '%s' does not exist." % self._path)
+                self._log.warning("monitoring node '%s' for creation." % self._path)
+                self._children = {}
+
+        if self._watch_observer:
+            self._watch_observer(self)
+
     def _run(self):
-        """Method to be run in GChildrenWatch greenlet."""
-        if not self._client.connected:
-            return
+        """Method will run in GChildrenWatch greenlet."""
 
         self._running = True
+        errors = 0
 
-        def watcher(event):
-            """Internal node watcher method.
-
-            watcher will be invoked in the context of GZookeeperClient
-            greenlet. It will put the event on the _queue so that it
-            can be handle in _run method and update the children
-            accordingly.
-            """
-            self._queue.put(event)
-
-        while self._watching:
+        while self._running:
             try:
-                children = self._client.get_children(self._path, watcher)
-                
-                #Add new children
-                for child in children:
-                    if child not in self._children:
-                        self._children[child] = self._client.get_data(os.path.join(self._path, child))
-                
-                #Remove old children
-                for child in self._children.keys():
-                    if child not in children:
-                        del self._children[child]
-
-                if self._watch_observer:
-                    self._watch_observer(self)
-                
                 event = self._queue.get()
+
                 if event is self._STOP_EVENT:
                     break
+                elif event is self._START_EVENT:
+                    if self._client.connected:
+                        self._update()
+                elif event.state == zookeeper.CONNECTING_STATE:
+                    #In the event of a disconnection we do not reset state.
+                    #Zookeeper should be running in a cluster, so we're assuming
+                    #that even in the event of servers failures or a network
+                    #partition we will be able to reconnect to at least
+                    #one of the zookeeper servers.
+                    pass
+                elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                    self._on_session_expiration()
+                elif event.state == zookeeper.CONNECTED_STATE:
+                    self._update()
+                    errors = 0
 
             except zookeeper.ConnectionLossException:
-                break
+                continue
+            except zookeeper.SessionExpiredException:
+                continue
+            except zookeeper.ClosingException:
+                continue
             except Exception as error:
+                errors = errors + 1
                 self._log.exception(error)
-
+                if errors > 10:
+                    self.log.error("max errors exceeded: exiting watch.")
+                    break
+        
         self._running = False
+
+    def _on_session_expiration(self):
+        """Helper to reset state in the event of zookeeper session expiration."""
+        self._children = {}
 
     def stop(self):
         """Stop watching children."""
@@ -306,6 +438,7 @@ class GHashringWatch(object):
             return "%s(%032x)" % (self.__class__.__name__, self.token)
 
 
+    _START_EVENT = object()
     _STOP_EVENT = object()
 
     def __init__(self, client, path, positions=None, position_data=None,
@@ -369,10 +502,18 @@ class GHashringWatch(object):
         def session_observer(event):
             """Internal zookeeper session observer to handle disconnections."""
 
-            #Restart the watcher upon reconnection if we're watching and not running
-            if self._watching and (not self._running) and event.state == zookeeper.CONNECTED_STATE:
-                self.start()
+            if not self._watching:
+                return
+
+            if event.state == zookeeper.CONNECTED_STATE:
+                #Restart the watcher upon reconnection if we're not running
+                if not self._running:
+                    self.start()
+            elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                self._on_session_expiration()
             
+            self._queue.put(event)
+
             if self._session_observer:
                 self._session_observer(event)
         
@@ -385,14 +526,25 @@ class GHashringWatch(object):
                     (self.__class__.__name__, self._path))
 
             self._watching = True
+            self._queue.put(self._START_EVENT)
             self._greenlet = gevent.spawn(self._run)
 
     def _add_hashring_positions(self):
-        """Add positions to hashring (create nodes)."""
+        """Add positions to hashring (create nodes).
+
+        Ensure hashring positions are present. If positions
+        already exist on the hashring, this method will
+        not do anything.
+        """
 
         #If positions have already been added return
         if self._occupied_positions != 0:
             return
+
+        try:
+            self._client.create_path(self._path)
+        except zookeeper.NodeExistsException:
+            pass
         
         #Allocate a position queue with requested hashring
         #positions. These position values will be 
@@ -410,7 +562,6 @@ class GHashringWatch(object):
                     else:
                         position = uuid.uuid4().int
 
-                    self._client.create_path(self._path)
                     data = self._position_data or position
                     hex_position = "%032x" % position
                     self._client.create(os.path.join(self._path, hex_position), data, ephemeral=True)
@@ -436,89 +587,112 @@ class GHashringWatch(object):
             try:
                 hex_position = "%032x" % position
                 self._client.delete(os.path.join(self._path, hex_position))
-            except zookeeper.NoNodeException as error:
-                self._log.exception(error)
+            except Exception as error:
+                message = "error removing hashring position %s: %s" % (hex_position, str(error))
+                self._log.error(message)
+
+    def _watcher(self, event):
+        """Internal watcher to be invoked when hashring changes.
+    
+        Method will be invoked in the context of GZookeeperClient
+        greenlet. It will put an event on the _queue to signal
+        the _run method to awaken and update the hashring data
+        in the context of the GHashringWatch greenlet.
+        """
+        self._queue.put(event)
+
+    def _update(self):
+        """Helper method to update the hashring ring.
+
+        This method attempts to update the object's local hashring
+        with data retrieved from zookeeper. Following the update,
+        registered watch observers will be invoked.
+
+        Raises:
+            Zookeeper exceptions.
+        """
+        self._add_hashring_positions()
+    
+        children = self._client.get_children(self._path, self._watcher)
+    
+        previous_hashring = list(self._hashring)
+    
+        #Add new children
+        added_nodes = []
+        for child in children:
+            if child not in self._children:
+                data, stat = self._client.get_data(os.path.join(self._path, child))
+                self._children[child] = (data, stat)
+    
+                #Insort hash ring node into the sorted _hashring
+                position = long(child, 16)
+                node = self.HashringNode(position, data, stat)
+                added_nodes.append(node)
+                bisect.insort(self._hashring, node)
+        
+        #Remove old children
+        removed_nodes = []
+        for child in self._children.keys():
+            if child not in children:
+                position = long(child, 16)
+                del self._children[child]
+                node = self._hashring[self._hashring.index(self.HashringNode(position))]
+                removed_nodes.append(node)
+                self._hashring.remove(node)
+    
+        if self._watch_observer:
+            self._watch_observer(
+                    self,
+                    previous_hashring=previous_hashring,
+                    current_hashring=list(self._hashring),
+                    added_nodes=added_nodes,
+                    removed_nodes=removed_nodes)
     
     def _run(self):
         """Method to run in GHashringWatch greenlet."""
-        if not self._client.connected:
-            return
-        
+
         self._running = True
-        
-        self._add_hashring_positions()
-
-        def watcher(event):
-            """Internal watcher to be invoked when hashring changes.
-
-            Method will be invoked in the context of GZookeeperClient
-            greenlet. It will put an event on the _queue to signal
-            the _run method to awaken and update the hashring data
-            in the context of the GHashringWatch greenlet.
-            """
-            self._queue.put(event)
-        
-        #Keep track of consecutive errors
-        #If total gets too high we will break out.
         errors = 0
 
         while self._running:
             try:
-                children = self._client.get_children(self._path, watcher)
-
-                previous_hashring = list(self._hashring)
-
-                #Add new children
-                added_nodes = []
-                for child in children:
-                    if child not in self._children:
-                        data, stat = self._client.get_data(os.path.join(self._path, child))
-                        self._children[child] = (data, stat)
-
-                        #Insort hash ring node into the sorted _hashring
-                        position = long(child, 16)
-                        node = self.HashringNode(position, data, stat)
-                        added_nodes.append(node)
-                        bisect.insort(self._hashring, node)
-                        print self._hashring
-                
-                #Remove old children
-                removed_nodes = []
-                for child in self._children.keys():
-                    if child not in children:
-                        position = long(child, 16)
-                        del self._children[child]
-                        node = self._hashring[self._hashring.index(self.HashringNode(position))]
-                        removed_nodes.append(node)
-                        self._hashring.remove(node)
-
-                if self._watch_observer:
-                    self._watch_observer(
-                            self,
-                            previous_hashring=previous_hashring,
-                            current_hashring=list(self._hashring),
-                            added_nodes=added_nodes,
-                            removed_nodes=removed_nodes)
-
                 event = self._queue.get()
+
                 if event is self._STOP_EVENT:
                     break
-
-                errors = 0
+                elif event is self._START_EVENT:
+                    if self._client.connected:
+                        self._update()
+                elif event.state == zookeeper.CONNECTING_STATE:
+                    #In the event of a disconnection we do not reset state.
+                    #Zookeeper should be running in a cluster, so we're assuming
+                    #that even in the event of servers failures or a network
+                    #partition we will be able to reconnect to at least
+                    #one of the zookeeper servers.
+                    pass
+                elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                    self._on_session_expiration()
+                elif event.state == zookeeper.CONNECTED_STATE:
+                    self._update()
 
             except zookeeper.ConnectionLossException:
-                self._on_disconnected()
-                break
+                continue
+            except zookeeper.SessionExpiredException:
+                continue
+            except zookeeper.ClosingException:
+                continue
             except Exception as error:
                 errors = errors + 1
                 self._log.exception(error)
                 if errors > 10:
+                    self.log.error("max errors exceeded: exiting watch.")
                     break
         
         self._remove_hashring_positions()
         self._running = False
-    
-    def _on_disconnected(self):
+
+    def _on_session_expiration(self):
+        """Helper to reset state in the event of zookeeper session_expiration."""
         self._occupied_positions = 0
         self._hashring = []
         self._children = {}
@@ -604,8 +778,8 @@ class GHashringWatch(object):
         Raises:
             RuntimeError if no nodes are available.
         """
-        preference_list = self.preference_list()
+        preference_list = self.preference_list(data)
         if len(preference_list):
-            return self.preference_list[0]
+            return preference_list[0]
         else:
             raise RuntimeError("no nodes available")
