@@ -116,7 +116,11 @@ class GZookeeperClient(object):
 
 
     class AsyncQueue(Queue.Queue, object):
-        """AsyncQueue is a threadsafe queue with cross-thread signaling support."""
+        """AsyncQueue is a threadsafe queue with cross-thread signaling support.
+
+        AsyncQueue allows put() from independent, non-greenlet threads,
+        and get() from greenlets.
+        """
 
         def __init__(self, *args, **kwargs):
             super(GZookeeperClient.AsyncQueue, self).__init__(*args, **kwargs)
