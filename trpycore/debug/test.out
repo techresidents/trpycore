@@ -1,0 +1,17 @@
+Thread (id=4536004608)
+  File "/opt/local/Library/Frameworks/Python.framework/Versions/2.7/lib/python2.7/threading.py", line 525, in __bootstrap
+    self.__bootstrap_inner()
+  File "/opt/local/Library/Frameworks/Python.framework/Versions/2.7/lib/python2.7/threading.py", line 552, in __bootstrap_inner
+    self.run()
+  File "dump.py", line 24, in run
+    self.dump_stack()
+  File "dump.py", line 20, in dump_stack
+    traceback.print_stack(stackframe, file=self.file)
+Thread (id=140735327504736)
+  File "<stdin>", line 1, in <module>
+  File "/opt/local/Library/Frameworks/Python.framework/Versions/2.7/lib/python2.7/threading.py", line 500, in start
+    self.__started.wait()
+  File "/opt/local/Library/Frameworks/Python.framework/Versions/2.7/lib/python2.7/threading.py", line 407, in wait
+    self.__cond.release()
+  File "/opt/local/Library/Frameworks/Python.framework/Versions/2.7/lib/python2.7/threading.py", line 275, in wait
+    self._acquire_restore(saved_state)
