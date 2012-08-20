@@ -29,6 +29,7 @@ ERROR_CODE_EXCEPTION_MAP = {
     zookeeper.AUTHFAILED: zookeeper.AuthFailedException,
     zookeeper.BADARGUMENTS: zookeeper.BadArgumentsException,
     zookeeper.BADVERSION: zookeeper.BadVersionException,
+    zookeeper.CLOSING: zookeeper.ClosingException,
     zookeeper.CONNECTIONLOSS: zookeeper.ConnectionLossException,
     zookeeper.DATAINCONSISTENCY: zookeeper.DataInconsistencyException,
     zookeeper.INVALIDACL: zookeeper.InvalidACLException,
@@ -104,10 +105,10 @@ class ZookeeperClient(threading.Thread):
             if not self.ready():
                 raise self.TimeoutException("Timeout: result not ready")
             
-            if self.result:
-                return self.result
-            else:
+            if self.exception is not None:
                 raise self.exception
+            else:
+                return self.result
 
         def set(self, value=None):
             self.result = value
@@ -117,15 +118,21 @@ class ZookeeperClient(threading.Thread):
             self.exception = exception
             self.event.set()
 
-    def __init__(self, servers):
+    def __init__(self, servers, session_id=None, session_password=None):
         """Zookeeper constructor.
         
         Args:
             servers: list of zookeeper servers, i.e., ["localhost:2181", localdev:2181"]
+            session_id: optional zookeeper session id. If not provided, a new
+                zookeeper session will be created.
+            session_password: optional zookeeper session password, which is
+                required if session_id  is not None.
         """
         super(ZookeeperClient, self).__init__()
 
         self.servers = servers
+        self.session_id = session_id or -1
+        self.session_password = session_password or ""
         self.acl = [{"perms": 0x1f, "scheme": "world", "id": "anyone"}]
         self.handle = None
         self.session_observers = []
@@ -135,6 +142,31 @@ class ZookeeperClient(threading.Thread):
         self._queue = Queue.Queue()
         self.log = logging.getLogger(__name__)
 
+    def _session_watcher(self, handle, type, state, path):
+        """zookeeper session  callback method.
+        
+        This method will put the session  event in the queue_
+        where it will be consumed in the ZookeeperClient thread.
+        In this thread the event will be processed and passed
+        on to session observers.
+    
+        Args:
+            handle: zookeeper api handle
+            type: zookeeper api event type
+            state: zookeeper api state
+            path: zookeeper api node path
+        """
+        self._queue.put(self.Event(type, state, path))
+    
+    def _establish_session(self):
+        """Establish a session with zookeeper."""
+        servers = ",".join(self.servers)
+
+        self.handle = zookeeper.init(
+                servers,
+                self._session_watcher,
+                self.session_timeout_ms,
+                (self.session_id, self.session_password))
 
     def _watcher_proxy(self, watcher):
         """Proxy to invoke user passed watcher callback.
@@ -146,7 +178,11 @@ class ZookeeperClient(threading.Thread):
             return None
 
         def watcher_proxy_callback(handle, type, state, path):
-            watcher(self.Event(type, state, path))
+            try:
+                watcher(self.Event(type, state, path))
+            except Exception as error:
+                self.log.error("watcher exception from %s" % watcher)
+                self.log.exception(error)
         return watcher_proxy_callback
 
     def error_to_exception(self, return_code, message=None):
@@ -201,8 +237,8 @@ class ZookeeperClient(threading.Thread):
             self._queue.put(self.Event(type, state, path))
         
         self.log.info("ZookeeperClient started.")
-        #start up underlying zookeeper client
-        self.handle = zookeeper.init(",".join(self.servers), session_watcher, self.session_timeout_ms)
+
+        self._establish_session()
 
         while(self.running):
             try:
@@ -213,8 +249,20 @@ class ZookeeperClient(threading.Thread):
 
                 if event.state == zookeeper.CONNECTED_STATE:
                     self.connected = True
-                elif event.state in [zookeeper.CONNECTED_STATE, zookeeper.EXPIRED_SESSION_STATE]:
+                    self.session_id, self.session_password = self.session()
+                    self.log.info("Zookeeper connected: (session_id=%x, passwd=%r)" % (
+                        self.session_id, self.session_password))
+                elif event.state == zookeeper.CONNECTING_STATE:
                     self.connected = False
+                elif event.state == zookeeper.EXPIRED_SESSION_STATE:
+                    self.log.warning("Zookeeper session (%x) expired." % self.session_id)
+                    self.connected = False
+                    self.handle = None
+                    self.session_id = -1
+                    self.session_password = ""
+                    
+                    self.log.info("Attempting to establish a new session...")
+                    self._establish_session()
 
                 for observer in self.session_observers:
                     try:
@@ -260,6 +308,8 @@ class ZookeeperClient(threading.Thread):
         """Close underlying zookeeper connections."""
         zookeeper.close(self.handle)
         self.handle = None
+        self.session_id = -1
+        self.session_password = ""
         self.connected = False
 
     def add_session_observer(self, observer):
@@ -270,6 +320,10 @@ class ZookeeperClient(threading.Thread):
         with the ZookeeperClient.Event as its sole argument.
         """
         self.session_observers.append(observer)
+
+    def remove_session_observer(self, observer):
+        """Remove zookeeper api session observer."""
+        self.session_observers.remove(observer)
     
     def create(self, path, data=None, acl=None, sequence=False, ephemeral=False):
         """Blocking call to create Zookeeper node.
@@ -296,29 +350,39 @@ class ZookeeperClient(threading.Thread):
         
         return zookeeper.create(self.handle, path, data, acl, flags)
 
-    def create_path(self, path, acl=None, sequence=False, ephemeral=False):
+    def create_path(self, path, data=None, acl=None, sequence=False, ephemeral=False):
         """Blocking call to create Zookeeper node (including any subnodes that do not exist).
             
         Args:
             path: zookeeper node path, i.e. /my/zookeeper/node/path
             acl: optional zookeeper access control list (default is insecure)
-            sequence: if True node will be created by adding a unique number
+                to be applied to all created nodes.
+            data: Optional data to be set for leaf node.
+            sequence: if True leaf node will be created by adding a unique number
                 the supplied path.
-            ephemeral: if True, node will automatically be deleted when client exists.
-
+            ephemeral: if True, leaf node will automatically be deleted when client exists.
+        Returns:
+            path if node created, or None if it already exists.
         Raises:
             zookeeper.*Exception for other failure scenarios.
         """
-
-        data = None
+        result = None
         
-        current_path = ['']
+        current_path_list = ['']
         for node in path.split("/")[1:]:
-            current_path.append(node)
+            current_path_list.append(node)
+            current_path = "/".join(current_path_list)
             try:
-                self.create("/".join(current_path), data, acl, sequence, ephemeral)
+                if current_path == path:
+                    result = self.create(current_path, data, acl, sequence, ephemeral)
+                else:
+                    self.create(current_path, data=None, acl=acl)
             except zookeeper.NodeExistsException:
-                pass
+                if current_path == path:
+                    raise
+        
+        return result
+
 
     def exists(self, path, watcher=None):
         """Blocking call to check if zookeeper node  exists.
@@ -378,22 +442,25 @@ class ZookeeperClient(threading.Thread):
         """
         return zookeeper.get(self.handle, path, self._watcher_proxy(watcher))
 
-    def set_data(self, path, data, return_data=False):
+    def set_data(self, path, data, version=None, return_data=False):
         """Blocking call to set zookeeper node's data.
 
         Args:
             path: zookeeper node path
             data: zookeeper node data (string)
+            version = version if version is not None else -1
             return_data: if True return data
 
         Raises:
             zookeeper.NoNodeException if node already exists. 
             zookeeper.*Exception for other failure scenarios.
         """
+        version = version if version is not None else -1
+
         if return_data:
-            return zookeeper.set2(self.handle, path, data)
+            return zookeeper.set2(self.handle, path, data, version)
         else:
-            return zookeeper.set(self.handle, path, data)
+            return zookeeper.set(self.handle, path, data, version)
 
     def delete(self, path, version=None):
         """Blocking call to delete zookeeper node.
@@ -483,7 +550,7 @@ class ZookeeperClient(threading.Thread):
 
             callback = async_callback
 
-        zookeeper.aexists(self.handle, path, watcher, callback)
+        zookeeper.aexists(self.handle, path, self._watcher_proxy(watcher), callback)
 
         return async_result
 
@@ -517,7 +584,7 @@ class ZookeeperClient(threading.Thread):
 
             callback = async_callback
 
-        zookeeper.aget_children(self.handle, path, watcher, callback)
+        zookeeper.aget_children(self.handle, path, self._watcher_proxy(watcher), callback)
 
         return async_result
 
@@ -551,16 +618,17 @@ class ZookeeperClient(threading.Thread):
 
             callback = async_callback
 
-        zookeeper.aget(self.handle, path, watcher, callback)
+        zookeeper.aget(self.handle, path, self._watcher_proxy(watcher), callback)
 
         return async_result
 
-    def async_set_data(self, path, data, callback=None):
+    def async_set_data(self, path, data, version=None, callback=None):
         """Async call to set zookeeper node's data.
 
         Args:
             path: zookeeper node path
             data: zookeeper node data (string)
+            version: expected node version
             callback: callback method to be invoked upon operation completion with
                 zookeeper api handle, return_code, data, and stat.
                 callback will be invoked in the context of the underlying
@@ -570,6 +638,7 @@ class ZookeeperClient(threading.Thread):
             Zookeeper.AsyncResult if callback is None, otherwise None.
         """
         async_result = None
+        version = version if version is not None else -1
 
         if callback is None:
             async_result = self.AsyncResult()
@@ -582,7 +651,7 @@ class ZookeeperClient(threading.Thread):
 
             callback = async_callback
 
-        zookeeper.aset(self.handle, path, data, callback)
+        zookeeper.aset(self.handle, path, data, version, callback)
 
         return async_result
 

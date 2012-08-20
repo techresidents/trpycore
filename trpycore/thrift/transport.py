@@ -1,13 +1,11 @@
 import errno
 import os
+import select
+import socket
+import threading
 
-import gevent
-from gevent import select
-from gevent import socket
-
-#Patch TSocket.socket with gevent.socket
-from thrift.transport import TSocket, TTransport
-TSocket.socket = socket 
+from thrift.transport import TTransport
+from thrift.transport import TSocket
 
 class TransportClosedException(Exception):
     pass
@@ -26,7 +24,7 @@ class TNonBlockingServerSocket(TSocket.TSocketBase, TTransport.TServerTransportB
         self._unix_socket = unix_socket
         self.handle = None
         self.exit_pipe = os.pipe()
-        self.exit_event = gevent.event.Event()
+        self.exit_event = threading.Event()
         self.read_descriptors = [self.exit_pipe[0]]
 
     def listen(self):
