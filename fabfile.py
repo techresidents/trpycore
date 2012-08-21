@@ -43,7 +43,7 @@ def release(new_version, new_snapshot_version, current_version=None):
     new_major_version = new_version.rsplit('.', 1)[0]
 
     info = {
-        "service": env.project,
+        "library": env.project,
         "current_version": current_version or "%s-SNAPSHOT" % new_major_version,
         "new_version": new_version,
         "new_major_version": new_major_version,
