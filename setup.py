@@ -23,4 +23,15 @@ setup(
     license = open('LICENSE').read(),
     description = 'Tech Residents Core Library',
     long_description = open('README').read(),
+    classifiers=[
+        'Development Status :: 5 - Production/Stable',
+        'Environment :: Console',
+        'Intended Audience :: Developers',
+        'License :: Other/Proprietary License',
+        'Operating System :: POSIX',
+        'Programming Language :: Python',
+        'Topic :: Internet :: WWW/HTTP',
+        'Topic :: Software Development :: Libraries :: Python Modules',
+        'Topic :: System :: Distributed Computing',
+        ],
 )
