@@ -5,6 +5,7 @@ import unittest
 import gevent
 import zookeeper
 
+import testbase
 from trpycore.zookeeper_gevent.client import GZookeeperClient
 from trpycore.zookeeper_gevent.util import expire_zookeeper_client_session
 

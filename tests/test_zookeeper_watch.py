@@ -3,7 +3,7 @@ import os
 import unittest
 import time
 
-
+import testbase
 from trpycore.zookeeper.client import ZookeeperClient
 from trpycore.zookeeper.watch import ChildrenWatch, DataWatch, HashringWatch
 from trpycore.zookeeper.util import expire_zookeeper_client_session

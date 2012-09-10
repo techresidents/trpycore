@@ -1,5 +1,6 @@
 import unittest
 
+import testbase
 from trpycore.alg.grouping import group
 
 def check_result(result, n, min, max):

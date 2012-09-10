@@ -3,6 +3,7 @@ import time
 import unittest
 import Queue
 
+import testbase
 from trpycore.thread.threadpool import ThreadPool
 
 class TestThreadPool(unittest.TestCase):

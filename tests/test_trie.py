@@ -1,5 +1,6 @@
 import unittest
 
+import testbase
 from trpycore.datastruct.trie import Trie, MultiTrie
 
 class TestTrie(unittest.TestCase):
