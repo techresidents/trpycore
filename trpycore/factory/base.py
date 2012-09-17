@@ -1,4 +1,3 @@
-import abc
 import logging
 
 class CreateException(Exception):
@@ -12,8 +11,6 @@ class Factory(object):
     method is provided.
     """
 
-    __metaclass__ = abc.ABCMeta
-    
     def __init__(self, factory_method=None):
         """Factory constructor.
 
@@ -24,7 +21,6 @@ class Factory(object):
         """
         self.factory_method = factory_method
 
-    @abc.abstractmethod
     def create(self):
         """Create a factory object.
 
@@ -40,6 +36,6 @@ class Factory(object):
                 return self.factory_method()
             except Exception as exception:
                 logging.exception(exception)
-                raise CreateException
+                raise CreateException(str(exception))
         else:
             raise CreateException
