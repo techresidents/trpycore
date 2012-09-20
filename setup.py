@@ -16,7 +16,7 @@ def find_packages():
 
 setup(
     name='trpycore',
-    version = '0.7.0',
+    version = '0.8-SNAPSHOT',
     author = 'Tech Residents, Inc.',
     packages = find_packages(),
     ext_modules = [atomic_value],
