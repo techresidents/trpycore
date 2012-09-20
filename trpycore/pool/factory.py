@@ -5,7 +5,7 @@ from trpycore.pool.base import Pool, PoolContextManager, PoolEmptyException
 class FactoryPool(Pool):
     """Factory pool class which always returns a new instance object.
 
-    This class gives the allusion of a pool of object, but will always
+    This class gives the illusion of a pool of object, but will always
     return a new instance object from the factory. This is useful when
     a Pool interface is required, but the underlying object is inexpensive
     to create and is not actually worth pooling.

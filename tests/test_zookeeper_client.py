@@ -5,6 +5,7 @@ import time
 
 import zookeeper
 
+import testbase
 from trpycore.zookeeper.client import ZookeeperClient
 from trpycore.zookeeper.util import expire_zookeeper_client_session
 

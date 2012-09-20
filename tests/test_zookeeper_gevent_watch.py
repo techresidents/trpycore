@@ -4,6 +4,7 @@ import unittest
 
 import gevent
 
+import testbase
 from trpycore.zookeeper_gevent.client import GZookeeperClient
 from trpycore.zookeeper_gevent.watch import GChildrenWatch, GDataWatch, GHashringWatch
 from trpycore.zookeeper_gevent.util import expire_zookeeper_client_session

@@ -3,7 +3,7 @@ from trpycore.pool.base import Pool, PoolContextManager, PoolEmptyException
 class SimplePool(Pool):
     """Simple pool class which always returns the same instance object.
 
-    This class gives the allusion of a pool of object, but will always
+    This class gives the illusion of a pool of object, but will always
     return the same instance object. This is useful when a Pool interface
     is required, but the underlying object is actually thread/greenlet
     safe and does not require pooling.

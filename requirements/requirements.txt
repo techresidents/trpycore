@@ -1,0 +1,12 @@
+pytz
+psycopg2==2.4.5
+SQLAlchemy==0.7.6
+thrift==0.8.0
+pyzmq==2.1.11
+greenlet==0.4.0
+gevent==0.13.7
+gevent-zeromq==0.2.2
+python-cloudfiles==1.7.10
+git+https://github.com/basho/riak-python-client.git@1.4.0#egg=riak
+
+git+ssh://dev.techresidents.com/tr/repos/techresidents/lib/python/zookeeper.git@3.3.5#egg=zookeeper

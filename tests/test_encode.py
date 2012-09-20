@@ -1,5 +1,6 @@
 import unittest
 
+import testbase
 from trpycore.encode.basic import enbase, debase, reverse_bits, basic_encode, basic_decode
 
 class TestEncodeBasic(unittest.TestCase):
