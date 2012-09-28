@@ -86,6 +86,8 @@ class CloudfilesAuthenticator(object):
                         if endpoint["region"] == default_region:
                             cloudfiles_cdn_url = endpoint["publicURL"]
             
+            self.connection.close()
+
             return cloudfiles_url, cloudfiles_cdn_url, auth_token
 
         except Exception as error:
@@ -111,6 +113,7 @@ class CloudfilesAuthenticator(object):
         
         response = self.send_request("POST", "/tokens", data, headers)
         result = json.loads(response.read())
+        self.connection.close()
         return result
 
     def authenticate_password(self, username=None, password=None):
@@ -130,6 +133,7 @@ class CloudfilesAuthenticator(object):
 
         response = self.send_request("POST", "/tokens", data, headers)
         result = json.loads(response.read())
+        self.connection.close()
         return result
 
     def default_headers(self, method, path, data):
