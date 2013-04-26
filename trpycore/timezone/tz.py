@@ -37,9 +37,9 @@ ISO_8601_TIMEZONE_REGEX = re.compile(
 #Regex for parsing datetimes relatvie to 'now'.
 #Examples include 'now', 'now+1h', 'now+10d+1h+1m-1s', etc.
 NOW_REGEX = re.compile(
-    r"^now(?:(?P<plus_or_minus>[+-])(?P<offset>\d+)(?P<type>[dhms]))*$")
+    r"^now(?:(?P<plus_or_minus>[+-])(?P<offset>\d+)(?P<type>[Mdhms]))*$")
 NOW_REGEX_TERM = re.compile(
-    r"(?P<plus_or_minus>[+-])(?P<offset>\d+)(?P<type>[dhms])")
+    r"(?P<plus_or_minus>[+-])(?P<offset>\d+)(?P<type>[Mdhms])")
 
 def utcnow():
     """Return a datetime object in UTC with tzinfo properly set."""
@@ -192,6 +192,8 @@ def now_to_utc(formatted):
             offset_seconds += offset * 3600
         elif type == 'd':
             offset_seconds += offset * 24 * 3600
+        elif type == 'M':
+            offset_seconds += offset * 30 * 24 * 3600
     
     result = utcnow() + datetime.timedelta(seconds=offset_seconds)
     return result
