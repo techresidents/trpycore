@@ -34,8 +34,8 @@ def bump_version(current_version, new_version):
 
     _file_replace(
             fileglob="setup.py",
-            pattern=r"{current_version}".format(**info),
-            replacement=r"{new_version}".format(**info))
+            pattern=r"version\s*=\s*'{current_version}'".format(**info),
+            replacement=r"version = '{new_version}'".format(**info))
     
 def release(new_version, new_snapshot_version, current_version=None):
     """Cut release"""
