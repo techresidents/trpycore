@@ -472,6 +472,8 @@ class HashringWatch(object):
                 Method will be invoked in the context of the underlying
                 zookeeper API thread.
         """
+        positions = positions or []
+
         self._client = client
         self._path = path
         self._watch_observer = watch_observer
