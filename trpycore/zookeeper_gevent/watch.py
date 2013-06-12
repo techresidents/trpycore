@@ -468,6 +468,7 @@ class GHashringWatch(object):
                 Method will be invoked in the context of the GZookeeperClient
                 greenlet.
         """
+        positions = positions or []
 
         self._client = client
         self._path = path

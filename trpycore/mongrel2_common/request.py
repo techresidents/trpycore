@@ -113,6 +113,28 @@ class SafeRequest(object):
         else:
             return None
     
+    def params(self, escape=True):
+        """Get dict of HTTP URL parameters or POST parameters
+
+        Args:
+            escape: if True parameter values will be escaped.
+        
+        Returns:
+            dict of HTTP URL parameters or POST parameters
+        """
+        result = {}
+        if self.method() == 'POST':
+            params = self.post_params
+        else:
+            params = self.url_params
+        
+        for name, value in params.items():
+            value = value[0]
+            if escape:
+                value = self._escape(value)
+            result[name] = value
+        return result
+
     def param(self, name, escape=True):
         """Get Http URL parameter or POST parameter.
 
