@@ -1,18 +1,10 @@
 import os
-import setuptools
-from distutils.core import setup, Extension
+from setuptools import setup, find_packages, Extension
+
+import ez_setup
+ez_setup.use_setuptools()
 
 atomic_value = Extension('trpycore.atomic.value', ['trpycore/atomic/value.c'])
-
-def find_packages():
-    packages = []
-    for dir,subdirs,files in os.walk('trpycore'):
-        package = dir.replace(os.path.sep, '.')
-        if '__init__.py' not in files:
-            # not a package
-            continue
-        packages.append(package)
-    return packages
 
 setup(
     name='trpycore',
