@@ -8,7 +8,7 @@ atomic_value = Extension('trpycore.atomic.value', ['trpycore/atomic/value.c'])
 
 setup(
     name='trpycore',
-    version = '0.13.0',
+    version = '0.14-SNAPSHOT',
     author = 'Tech Residents, Inc.',
     packages = find_packages(),
     ext_modules = [atomic_value],
